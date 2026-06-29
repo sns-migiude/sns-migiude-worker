@@ -1365,7 +1365,6 @@ export const DASHBOARD_HTML = `<!doctype html>
   var NT_PROMPT_BEFORE=""; // 仕上げ：改善前のプロンプト（改善後と見比べる用）
   var NT_DIFF=""; // 仕上げ：AIが説明した「改善前との違い（一言）」
   var NT_EDIT_ID=null; // 既存の型を編集中ならそのid（採用＝新規でなく更新になる）
-  var NT_HQ=[]; // 本部から配られた「みんなに効く型」（集合知ライブラリのローカルキャッシュ）
   var NT_PATTERN="single_short"; // 型の長さ・形式パターン
   var NT_IMAGE_TYPE="none"; // 画像の型。none=画像なし／oneliner=一文／list=箇条書き
   var NT_IMAGE_TYPES=[['none','なし（画像を付けない）'],['oneliner','一文（見出し・名言）'],['list','箇条書き（比較・ランキング）']];
@@ -1408,12 +1407,10 @@ export const DASHBOARD_HTML = `<!doctype html>
     else { NT_STEP="input"; NT_MAX=0; NT_NAME=""; NT_PROMPT=""; NT_PATTERN="single_short"; NT_IMAGE_TYPE="none"; NT_PROMPT_BEFORE=""; NT_DIFF=""; NT_EDIT_ID=null; NT_DRAFTS=[]; NT_KEPT=[]; NT_SEEN=[]; NT_ORIGIN=""; }
     Promise.all([
       api("GET","/api/types/list?account="+ACC),
-      api("GET","/api/hq/library?account="+ACC),
       api("GET","/api/account/state?account="+ACC)
     ]).then(function(rs){
       NT_LIST=(rs[0].body&&rs[0].body.types)||[];
-      NT_HQ=(rs[1].body&&rs[1].body.library)||[];
-      var s=(rs[2]&&rs[2].body)||{}; // 解放・Premium状態を最新化（長文・URLパターンの出し分け）
+      var s=(rs[1]&&rs[1].body)||{}; // 解放・Premium状態を最新化（長文・URLパターンの出し分け）
       IS_PREMIUM=!!s.x_premium; URL_UNLOCKED=!!s.url_posts;
       ntRender();
     });
@@ -1447,45 +1444,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     for(var n=1;n<=5;n++){ s+="<span class='star"+(n<=rating?' on':'')+"' onclick='ntRate("+i+","+n+")'>★</span>"; }
     return s+"</span>";
   }
-  function ntListHtml(){
-    var h="<div class='card'><h3 style='margin-top:0'>登録済みの型（"+NT_LIST.length+"）</h3>";
-    if(!NT_LIST.length){ h+="<div class='note'>まだありません。上で作ってみましょう。</div>"; }
-    NT_LIST.forEach(function(t){
-      h+="<div style='border-bottom:1px solid var(--border);padding:8px 0'><div style='min-width:0'><b>⭐ "+esc(t.name)+"</b><div class='note' style='white-space:pre-wrap'>"+esc(t.prompt)+"</div></div><div class='row' style='gap:6px;margin-top:6px;align-items:center'><button class='accent' style='padding:4px 12px;font-size:13px' onclick='ntEditType("+t.id+")'>✏️ 編集・再トレーニング</button>";
-      h+="<span class='note' style='color:var(--accent-strong)' title='型の構造と反応データ（平常比）を匿名で本部に共有しています'>🔗 集合知に共有中</span>";
-      h+="<button class='soft' style='padding:4px 12px;font-size:13px' onclick='ntDelete("+t.id+")'>削除</button></div></div>";
-    });
-    h+="<div class='note' style='margin-top:8px'>採用した型は「承認＆添削」の型メニューに<b>⭐つき</b>で出ます。<br>すべての型は<b>型の構造（プロンプト）と反応データ（平常比）だけ</b>を匿名で本部に共有し、みんなの集合知になります（本文・文体・ネタは送りません）。これは止められません。</div></div>";
-    return h;
-  }
-  function ntHqHtml(){
-    var h="<div class='card'><div class='row' style='justify-content:space-between;align-items:center'><h3 style='margin:0'>みんなに効く型（集合知）</h3><button class='soft' style='padding:4px 12px;font-size:13px' onclick='ntSyncHonbu()'>🔄 本部と同期</button></div>";
-    if(!NT_HQ.length){ h+="<div class='note' style='margin-top:6px'>まだありません。会員みんなの実績から、広く効くと分かった型がここに並びます。「本部と同期」で最新を取り込めます。</div></div>"; return h; }
-    NT_HQ.forEach(function(t,i){
-      var pct=Math.round(((t.score||1)-1)*100);
-      h+="<div style='border-bottom:1px solid var(--border);padding:8px 0'><div><b>"+esc(stripPat(t.name))+"</b>"+patPill(patLabelFromKey(t.type_key))+(t.mine?" <span class='pill' style='background:var(--accent-bg);color:var(--accent-strong)'>導入済み</span>":"")+"<span class='note' style='margin-left:8px'>"+(t.member_count||0)+"人で実績・平常比"+(pct>=0?"+":"")+pct+"%</span></div><div class='note' style='white-space:pre-wrap;margin-top:2px'>"+esc(t.prompt)+"</div>";
-      if(!t.mine){ h+="<div class='row' style='margin-top:6px'><button class='accent' style='padding:4px 12px;font-size:13px' onclick='ntUseHqType("+i+")'>＋ この型を使ってみる</button></div>"; }
-      h+="</div>";
-    });
-    h+="<div class='note' style='margin-top:8px'>「使ってみる」を押すと、その型があなたの型として読み込まれます。トレーニングであなた仕様に育ててから採用できます。</div></div>";
-    return h;
-  }
-  function ntShare(id,on){
-    api("POST","/api/types/share",{account:ACC,id:id,shared:on}).then(function(r){ if(r.body&&r.body.ok){ loadNewType(); } else { msg("切り替えに失敗しました。",false); } });
-  }
-  function ntUseHqType(i){
-    var t=NT_HQ[i]; if(!t) return;
-    NT_EDIT_ID=null; NT_NAME=t.name||""; NT_PROMPT=t.prompt||""; NT_ORIGIN="（みんなに効く型から取り込み）";
-    NT_PROMPT_BEFORE=""; NT_DIFF=""; NT_DRAFTS=[]; NT_KEPT=[]; NT_SEEN=[];
-    NT_STEP="prompt"; NT_MAX=NT_ORDER.prompt; ntRender(); try{ window.scrollTo(0,0); }catch(e){}
-  }
-  function ntSyncHonbu(){
-    msg("本部と同期しています…");
-    api("POST","/api/hq/sync").then(function(r){
-      if(r.body&&r.body.ok){ msg("同期しました（共有 "+(r.body.pushed_types||0)+" 型・受信 "+(r.body.library||0)+" 型）。"); loadNewType(); }
-      else { msg("同期に失敗しました。",false); }
-    });
-  }
+  // （旧・集合知UIの未使用関数 ntListHtml/ntHqHtml/ntShare/ntUseHqType/ntSyncHonbu は撤去。集合知は「型の検索」に集約済み）
   // 型の長さ・形式パターン → 表示ラベル。
   var PAT_LABEL={single_short:"単発・短文",single_long:"単発・長文",thread_short:"連結・短文",thread_long:"連結・短＋長",url:"🔗 URLに繋げる",img_ss_one:"🖼 短文・単発＋画像（一文）",img_sl_one:"🖼 長文・単発＋画像（一文）",img_ts_one:"🖼 短文＋短文・連結＋画像（一文）",img_tl_one:"🖼 短文＋長文・連結＋画像（一文）",img_ss_list:"🖼 短文・単発＋画像（箇条書き）",img_sl_list:"🖼 長文・単発＋画像（箇条書き）",img_ts_list:"🖼 短文＋短文・連結＋画像（箇条書き）",img_tl_list:"🖼 短文＋長文・連結＋画像（箇条書き）",img_oneliner:"🖼 画像・一文",img_list:"🖼 画像・箇条書き"};
   function patLabel(p){ return PAT_LABEL[p]||""; }
