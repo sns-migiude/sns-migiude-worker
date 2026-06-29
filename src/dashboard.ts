@@ -398,8 +398,11 @@ export const DASHBOARD_HTML = `<!doctype html>
       </section>
 
       <section id="s-typesearch" class="screen hidden">
-        <h2>型の検索</h2>
-        <p class="lead">会員みんなの実績から<b>「効く」と分かった型</b>（集合知）を探せます。キーワードで絞り込み、気に入った型は「使ってみる」で取り込み → <b>型の開発</b>であなた仕様に育ててから採用します。</p>
+        <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <h2 style="margin:0">型の検索</h2>
+          <button class="soft" style="padding:6px 14px;font-size:13px" onclick="tsSyncHonbu()">🔄 本部と同期</button>
+        </div>
+        <p class="lead">会員みんなの実績から<b>「効く」と分かった型</b>（集合知）を探せます。キーワードで絞り込み、気に入った型は「使ってみる」で取り込み → <b>型の開発</b>であなた仕様に育ててから採用します。<br>「🔄 本部と同期」で、あなたの型を本部に共有＋最新の効く型を受け取ります（初回押下で本部に会員登録されます）。</p>
         <div class="card">
           <div class="row" style="gap:8px;flex-wrap:nowrap;align-items:center">
             <input id="tsQ" type="search" placeholder="キーワードで検索（型名・内容）" oninput="tsSearch()" style="flex:1">
@@ -1511,6 +1514,14 @@ export const DASHBOARD_HTML = `<!doctype html>
     var el=$("tsBody"); if(el) el.innerHTML="<div class='spin'></div>";
     fetchTypeSearch();
     autoSyncHonbu(); // 開いたら自動で最新化（手動ボタン不要・1時間に1回まで）
+  }
+  // 「本部と同期」ボタン（型の検索の見出し）。手動で即同期＝共有push＋ライブラリpull。初回は本部に会員登録される。
+  function tsSyncHonbu(){
+    msg("本部と同期しています…");
+    api("POST","/api/hq/sync").then(function(r){
+      if(r.body&&r.body.ok){ try{ localStorage.setItem("ts_last_sync",String(Date.now())); }catch(e){} msg("本部と同期しました（共有 "+(r.body.pushed_types||0)+" 型・受信 "+(r.body.library||0)+" 型）。"); loadTypeSearch(); }
+      else { msg("同期に失敗しました。時間をおいて再度お試しください。",false); }
+    });
   }
   // 本部と自動同期：型の検索を開いたとき、最後の同期から1時間以上ならバックグラウンドで同期して再描画。
   function autoSyncHonbu(){
