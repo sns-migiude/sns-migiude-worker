@@ -163,26 +163,7 @@ CREATE TABLE IF NOT EXISTS cycle_state (
   updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- ── ダッシュボード文書・サイクルレポート（account単位） ──────────────────
-CREATE TABLE IF NOT EXISTS documents (
-  account_id    TEXT NOT NULL,
-  key           TEXT NOT NULL,                    -- 'cycle_state' | 'report_C001' | 'learnings' …
-  title         TEXT,
-  content       TEXT,
-  updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (account_id, key)
-);
-
--- ── 投函受信箱（ネタメモ・フィードバック・account単位） ──────────────────
-CREATE TABLE IF NOT EXISTS inbox (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  account_id    TEXT NOT NULL,
-  kind          TEXT NOT NULL,                    -- memo | feedback
-  content       TEXT NOT NULL,
-  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  processed_at  TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_inbox_acc ON inbox(account_id, processed_at);
+-- （旧 documents / inbox テーブルは未使用のため撤去。既存DBに残っていても無害＝放置でよい）
 
 -- ── サンプル/トレーニングのフィードバック（添削の差分＋★評価・account単位） ──
 -- 添削(kind='edit')：before_body=AI初稿 / after_body=会員の言葉 を両方残す＝差分学習用。
