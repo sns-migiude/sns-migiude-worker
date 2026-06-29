@@ -7,7 +7,7 @@
 
 ## セットアップ（ボタンひとつ）
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sns-migiude/sns-migiude)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sns-migiude/worker)
 
 1. 上のボタン → Cloudflareにログイン（無料アカウントでOK）
 2. **Worker / D1 / R2 が自動で作られます**（あなたのアカウント上）
