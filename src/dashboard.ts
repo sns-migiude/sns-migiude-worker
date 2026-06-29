@@ -346,6 +346,10 @@ export const DASHBOARD_HTML = `<!doctype html>
         <div class="card" style="background:var(--accent-bg);border-color:#b5d4f4;padding:10px 14px">
           <div class="note" style="color:var(--text);line-height:1.8">📈 <b>データは連携した今から少しずつ溜まっていきます。</b>反応（インプ・いいね等）は<b>これから投稿するぶん</b>を毎日自動で集計します。投稿が増えるほど、型・時間帯の精度が上がります。<br>※ Xの仕様で<b>過去の投稿には遡れません</b>（連携前の反応は取得できません）。今日がスタート地点です。</div>
         </div>
+        <div class="row" style="justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <button class="soft" onclick="collectNow()"><i class="ti ti-refresh"></i> いまメトリクスを取得</button>
+          <span class="note" style="color:var(--text)">💳 Xの読み取りAPIを使うため<b>取得のたびに料金が発生</b>します（通常は1日1回・自動。手動取得はその分だけ加算されます）</span>
+        </div>
         <div class="row" id="periodTabs" style="gap:6px;margin-bottom:10px;align-items:center">
           <span class="note" style="margin-right:2px">集計期間：</span>
           <span class="rtab on" data-d="0" onclick="setPeriod(0)">全期間</span>
@@ -2009,6 +2013,14 @@ export const DASHBOARD_HTML = `<!doctype html>
     loadAnalysis();
   }
   function periodLabel(){ return ANALYSIS_DAYS>0 ? ("過去"+ANALYSIS_DAYS+"日") : "全期間"; }
+  function collectNow(){
+    if(!confirm("いまXからメトリクスをまとめて取得します。\\n\\n💳 Xの読み取りAPIを使うため、取得のたびに料金が発生します（通常は1日1回・自動）。\\n実行しますか？")) return;
+    msg("メトリクスを取得しています…（投稿数により数十秒かかることがあります）");
+    api("POST","/api/collect-now").then(function(r){
+      if(r.body&&r.body.ok){ var mc=(r.body.metrics&&r.body.metrics.length)||0; msg("取得しました（"+mc+"アカウント分）。最新の反応で分析を更新します。"); loadAnalysis(); }
+      else { msg("取得に失敗しました。連携状態をご確認ください。",false); }
+    });
+  }
   function loadAnalysis(){
     if($("analysisBody")) $("analysisBody").innerHTML="<div class='spin'></div>";
     var q = ANALYSIS_DAYS>0 ? ("&days="+ANALYSIS_DAYS) : "";
