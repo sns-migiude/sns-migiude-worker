@@ -50,6 +50,7 @@ export async function getPromptPack(env: Env): Promise<PromptPack | null> {
   // 本部が公開している「最新のコード版」と更新メモも拾ってキャッシュ（ダッシュボードの“更新あり”表示に使う）。
   if (m) {
     if (typeof m.code === "string" || typeof m.code === "number") await setConfig(env, "latest_code_version", String(m.code));
+    if (typeof m.min === "string" || typeof m.min === "number") await setConfig(env, "min_code_version", String(m.min));
     if (typeof m.note === "string") await setConfig(env, "update_note", (m.note as string).slice(0, 300));
   }
   const latest = m && typeof m.prompt === "number" ? (m.prompt as number) : null;

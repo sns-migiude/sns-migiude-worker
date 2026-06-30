@@ -675,10 +675,15 @@ export default {
       } catch { /* accounts未作成 */ }
       const email = await getConfig(env, "member_email");
       const latest = (await getConfig(env, "latest_code_version")) || "";
+      const minVer = (await getConfig(env, "min_code_version")) || "";
       const updateNote = (await getConfig(env, "update_note")) || "";
+      const cur = parseFloat(CODE_VERSION) || 0;
       return json({
         ok: true, account_id: uid, handle: acc?.handle ?? null, onboarded, email: email ?? null,
-        version: CODE_VERSION, latest_version: latest, update_available: (parseFloat(latest) || 0) > (parseFloat(CODE_VERSION) || 0), update_note: updateNote,
+        version: CODE_VERSION, latest_version: latest, min_version: minVer,
+        update_available: (parseFloat(latest) || 0) > cur,
+        update_required: (parseFloat(minVer) || 0) > cur, // 必須版に満たない＝ブロック
+        update_note: updateNote,
         update_url: "https://join.sns-migiude.com/update",
       });
     }

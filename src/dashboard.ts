@@ -880,14 +880,30 @@ export const DASHBOARD_HTML = `<!doctype html>
       });
     });
   }
-  // バージョン表記＋「アップデートがあります」バナー（本部の最新版と比較）。
+  // バージョン表記＋「アップデートがあります」バナー（本部の最新版と比較）。必須版を下回ると全画面ブロック。
   function applyVersion(w){
     var v=$("verLabel"); if(v) v.textContent="v"+(w.version!=null?w.version:"?");
+    // 必須版に満たない＝強制アップデート。全画面オーバーレイで操作をブロックする。
+    if(w.update_required){
+      var ov=$("forceUpd");
+      if(!ov){
+        ov=document.createElement("div");
+        ov.id="forceUpd";
+        ov.style.cssText="position:fixed;inset:0;z-index:9999;background:rgba(255,255,255,.97);display:flex;align-items:center;justify-content:center;padding:24px";
+        document.body.appendChild(ov);
+      }
+      var furl=w.update_url||"https://join.sns-migiude.com/update";
+      var fnote=w.update_note?("<div style='color:#555;font-size:14px;margin:8px 0 0'>"+esc(w.update_note)+"</div>"):"";
+      ov.innerHTML="<div style='max-width:440px;text-align:center;background:#fff;border:1px solid #f1d1d1;border-radius:14px;padding:28px 24px;box-shadow:0 8px 30px rgba(0,0,0,.08)'><i class='ti ti-alert-triangle' style='font-size:34px;color:#c0392b'></i><h2 style='margin:10px 0 4px;font-size:19px'>アップデートが必要です</h2><div style='color:#555;font-size:14px'>お使いのバージョン（v"+esc(w.version)+"）はサポートが終了しました。最新版（v"+esc(w.latest_version)+"）に更新してからご利用ください。</div>"+fnote+"<a href='"+esc(furl)+"' target='_blank' rel='noopener' style='display:inline-block;margin-top:16px;background:#111;color:#fff;text-decoration:none;padding:11px 22px;border-radius:9px;font-weight:600'>更新方法を見る →</a></div>";
+      ov.style.display="flex";
+      return;
+    }
+    var ovx=$("forceUpd"); if(ovx) ovx.style.display="none";
     var b=$("updBanner"); if(!b) return;
     if(w.update_available){
       var note=w.update_note?("（"+w.update_note+"）"):"";
       var url=w.update_url||"https://join.sns-migiude.com/update";
-      b.innerHTML="<i class='ti ti-rocket'></i> 新しいバージョン <b>v"+esc(w.latest_version)+"</b> が公開されました"+esc(note)+"。<b>自動更新がONなら近いうちに自動で反映されます</b>（操作不要）。今すぐ反映したい・自動更新が未設定の場合は <a href='"+esc(url)+"' target='_blank' rel='noopener' style='color:#4a3206;text-decoration:underline;font-weight:600'>更新方法 →</a>";
+      b.innerHTML="<i class='ti ti-rocket'></i> 新しいバージョン <b>v"+esc(w.latest_version)+"</b> が公開されました"+esc(note)+"（今 v"+esc(w.version)+"）。<b>自動更新がONなら近いうちに自動で反映されます</b>（操作不要）。今すぐ反映したい・自動更新が未設定の場合は <a href='"+esc(url)+"' target='_blank' rel='noopener' style='color:#4a3206;text-decoration:underline;font-weight:600'>更新方法 →</a>";
       b.style.display="block";
     } else { b.style.display="none"; }
   }
