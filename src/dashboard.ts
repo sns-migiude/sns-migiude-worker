@@ -784,6 +784,7 @@ export const DASHBOARD_HTML = `<!doctype html>
         <a href="https://join.sns-migiude.com/terms" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">利用規約</a>
         ・ <a href="https://join.sns-migiude.com/privacy" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">プライバシーポリシー</a>
         ／ SNSの右腕 <span id="verLabel"></span>
+        ・ <a href="https://join.sns-migiude.com/changelog" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">更新履歴</a>
       </div>
     </div>
   </div>
