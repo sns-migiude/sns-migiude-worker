@@ -376,7 +376,7 @@ async function handleUpsertAccount(req: Request, env: Env): Promise<Response> {
       b.display_name ?? null,
       b.niche ?? null,
       b.cycle_days ?? 5,
-      b.daily_frequency ?? 3,
+      Math.max(1, Math.min(5, Math.round(b.daily_frequency ?? 3))),
       b.approval_mode === "auto" ? "auto" : "queue",
       JSON.stringify(b.platforms ?? ["x"]),
       b.active ?? 1
@@ -1018,6 +1018,8 @@ export default {
       }
       const mode =
         b.approval_mode === "auto" ? "auto" : b.approval_mode === "queue" ? "queue" : null;
+      // 1日のポスト数は 1〜5 にクランプ（上限5本）。
+      const freq5 = typeof b.daily_frequency === "number" ? Math.max(1, Math.min(5, Math.round(b.daily_frequency))) : null;
       // 自動投稿の解放条件：トレーニング（添削＋★5合格）が10本以上（設計書06章）
       if (mode === "auto") {
         const pass = (await readCount(env, b.account, "edit_count")) + (await readCount(env, b.account, "star5_count"));
@@ -1042,7 +1044,7 @@ export default {
           b.niche ?? null,
           mode,
           b.cycle_days ?? null,
-          b.daily_frequency ?? null,
+          freq5,
           b.account
         )
         .run();
@@ -2453,7 +2455,7 @@ export default {
       const b = (await req.json().catch(() => null)) as { account?: string; slots?: string[]; daily_frequency?: number; reflow?: boolean } | null;
       if (!b?.account) return json({ error: "account は必須" }, 400);
       // 本数（1日の投稿本数）。時刻の数はこれに揃える。
-      let freq = typeof b.daily_frequency === "number" ? Math.max(1, Math.min(4, Math.round(b.daily_frequency))) : 0;
+      let freq = typeof b.daily_frequency === "number" ? Math.max(1, Math.min(5, Math.round(b.daily_frequency))) : 0;
       if (freq) {
         await env.DB.prepare(`UPDATE accounts SET daily_frequency = ? WHERE id = ?`).bind(freq, b.account).run();
       } else {

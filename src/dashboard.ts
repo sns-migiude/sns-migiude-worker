@@ -1073,7 +1073,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     h += "<p class='lead'>@"+esc(s.handle||"")+" ・ "+vnote+"</p>";
     h += "<div class='card'>";
     h += "<div style='font-weight:500;margin-bottom:12px'>配信と学習のペースを決めましょう（あとで変えられます）</div>";
-    h += "<label>1日の投稿本数</label><select id='tfreq'>"+selOpts([1,2,3,4],freq,"本")+"</select>";
+    h += "<label>1日の投稿本数</label><select id='tfreq'>"+selOpts([1,2,3,4,5],freq,"本")+"</select>";
     h += "<div class='note' style='margin-top:4px'>※ 学習サイクルは後で「学習データ＆サイクル」で調整できます。</div>";
     var unlocked = !!s.auto_unlocked, pc = s.pass_count || 0;
     var tAuto = (mode==="auto" && unlocked);
@@ -2874,7 +2874,7 @@ export const DASHBOARD_HTML = `<!doctype html>
       + "<div class='note' style='margin-top:2px'><span id='"+rid+"c'>"+jLen(val)+"</span> / "+limit+" 字</div>";
   }
   function replyVal(rid){ var t=$(rid); return t?t.value:undefined; }
-  var curSlots=[]; var curFreq=3; var SLOT_DEFAULTS=["06:30","11:30","17:00","21:00"];
+  var curSlots=[]; var curFreq=3; var SLOT_DEFAULTS=["06:30","11:30","17:00","21:00","13:30"];
   function renderSlotInputs(){
     var n=curFreq, h="";
     for (var i=0;i<n;i++){
@@ -3070,7 +3070,7 @@ export const DASHBOARD_HTML = `<!doctype html>
         ? "ON：ネタ元・方向性を起点に、AIが内容をある程度ふくらませて書きます。"
         : "OFF：学習データ（ネタ元・方向性）の範囲を超えず、書いてあることから書きます。";
       var cyc=s.cycle_days||5, freq=s.daily_frequency||3;
-      var cf=$("cycFreq"); if(cf){ var of=""; for(var k=1;k<=4;k++){ of+="<option value='"+k+"'"+(k===freq?" selected":"")+">"+k+"本</option>"; } cf.innerHTML=of; }
+      var cf=$("cycFreq"); if(cf){ var of=""; for(var k=1;k<=5;k++){ of+="<option value='"+k+"'"+(k===freq?" selected":"")+">"+k+"本</option>"; } cf.innerHTML=of; }
       var cd=$("cycDays"); if(cd){ var od=""; for(var d=3;d<=5;d++){ od+="<option value='"+d+"'"+(d===cyc?" selected":"")+">"+d+"日</option>"; } cd.innerHTML=od; }
       updCycleCalc();
     });
