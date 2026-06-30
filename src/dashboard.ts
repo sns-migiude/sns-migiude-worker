@@ -850,7 +850,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     $("app").classList.toggle("hidden", which!=="app");
   }
   // devのみ「UIサンプル」ナビを出す（本番はENV_LABEL=""なので非表示のまま）
-  function revealDevTools(){ if(!IS_DEV) return; var a=$("nav-uikit"), g=$("grp-dev"); if(a) a.style.display="block"; if(g) g.style.display="block"; }
+  function revealDevTools(){ if(!IS_DEV) return; var a=$("nav-uikit"), g=$("grp-dev"); if(a) a.style.display="flex"; if(g) g.style.display="block"; }
   function showApp(){
     $("loginErr").textContent="";
     revealDevTools();
@@ -877,10 +877,11 @@ export const DASHBOARD_HTML = `<!doctype html>
   // 招待リンクは運営が開放した会員だけ。開放されていればメニューを出す（キャッシュで即時表示＋本部確認で更新）。
   function refreshInviteNav(){
     var el=$("nav-invite"); if(!el) return;
-    try{ if(localStorage.getItem("sns_invite_enabled")==="1") el.style.display="block"; }catch(e){}
+    // .nav は flex（アイコンと文字の余白 gap）。block で出すと余白が消えるので flex で表示する。
+    try{ if(localStorage.getItem("sns_invite_enabled")==="1") el.style.display="flex"; }catch(e){}
     api("GET","/api/invites").then(function(r){
       var b=r.body||{}; var on=!!(b.ok && b.code);
-      el.style.display = on ? "block" : "none";
+      el.style.display = on ? "flex" : "none";
       try{ localStorage.setItem("sns_invite_enabled", on?"1":"0"); }catch(e){}
     });
   }
