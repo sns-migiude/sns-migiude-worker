@@ -186,6 +186,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     <div class="grp">計測</div>
     <div class="nav" data-s="cv" onclick="nav('cv')"><i class="ti ti-target-arrow"></i> クリック＆CV解析</div>
     <div class="grp">管理</div>
+    <div class="nav" data-s="invite" onclick="nav('invite')"><i class="ti ti-gift"></i> 仲間を招待</div>
     <div class="nav" data-s="usage" onclick="nav('usage')"><i class="ti ti-receipt"></i> API料金の目安</div>
     <div class="nav" data-s="settings" onclick="nav('settings')"><i class="ti ti-settings"></i> アカウント設定</div>
     <div class="nav" data-s="help" onclick="nav('help')"><i class="ti ti-help"></i> ヘルプ</div>
@@ -661,6 +662,31 @@ export const DASHBOARD_HTML = `<!doctype html>
         <details class="card" style="margin:8px 0"><summary style="cursor:pointer;font-weight:500">鍵やデータの安全は？文体が乗っ取られたりしない？</summary><div class="note" style="margin-top:8px;line-height:1.9;color:var(--text)">鍵（X・Claude）も投稿本文も、<b>すべてあなた自身のCloudflare内に暗号化して保存</b>され、運営はアクセスしません。文体のお手本は<b>あなたの過去投稿だけ</b>なので、文体が乗っ取られることはありません。集合知に出るのは型の構造と反応の数値だけで、本文・文体・ネタ・APIキーは送られません。</div></details>
         <details class="card" style="margin:8px 0"><summary style="cursor:pointer;font-weight:500">運営からのお知らせメール・配信停止は？</summary><div class="note" style="margin-top:8px;line-height:1.9;color:var(--text)">「アカウント設定」でお知らせメールの宛先を登録できます。運営からの案内が届きます。<b>配信はいつでも停止</b>できます（メール内の配信停止リンクから）。</div></details>
         <details class="card" style="margin:8px 0"><summary style="cursor:pointer;font-weight:500">止めたい・やめたいときは？</summary><div class="note" style="margin-top:8px;line-height:1.9;color:var(--text)"><b>承認モードを手動</b>にすれば、投稿前に必ず止まります。いつでも停止・退会できます。<a href="https://join.sns-migiude.com/terms" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline">利用規約</a>・<a href="https://join.sns-migiude.com/privacy" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline">プライバシーポリシー</a>もご確認ください。</div></details>
+      </section>
+
+      <section id="s-invite" class="screen hidden">
+        <h2>仲間を招待</h2>
+        <p class="lead">いまは招待制です。あなたから最大<b id="invCap">5</b>人まで招待できます。あなたが渡したコードを使った人は、運営の承認を待たずにそのまま始められます。</p>
+
+        <div class="card" style="background:var(--accent-bg);border-color:#b5d4f4">
+          <div class="row" style="justify-content:space-between;align-items:center;gap:10px">
+            <div><b>招待枠</b> <span id="invQuota" class="note" style="color:var(--text);font-size:14px">…</span></div>
+            <button class="primary" id="invNewBtn" onclick="inviteCreate()"><i class="ti ti-plus"></i> 招待コードを発行</button>
+          </div>
+          <div id="invMsg" class="msg" style="margin:8px 0 0"></div>
+        </div>
+
+        <div id="invList"><div class="spin"></div></div>
+
+        <div class="card">
+          <b>招待された人の始め方（共有メッセージに含まれます）</b>
+          <ol class="note" style="line-height:1.9;color:var(--text);margin:6px 0 0;padding-left:1.2em">
+            <li>「アプリを作る」ボタンから、自分のCloudflareに自分専用のアプリを作る（無料枠）</li>
+            <li>最初の設定で、あなたが渡した<b>招待コード</b>を入力する</li>
+            <li>X と Claude を連携すれば、その人だけのAIの右腕が動き出します</li>
+          </ol>
+          <p class="note" style="margin:8px 0 0">※ 鍵もデータも招待された人自身のCloudflareに保存され、あなたからは見えません。費用もその人自身のAPI利用分だけです。</p>
+        </div>
       </section>
 
       <section id="s-uikit" class="screen hidden">
@@ -1331,6 +1357,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     if (s==="typesearch"){ loadMode(); loadTypeSearch(); } // loadMode＝ラベル絞り込みの長文/画像オプションの表示制御も行う
     if (s==="typemanage"){ loadTypeManage(); }
     if (s==="cards"){ loadCards(); }
+    if (s==="invite"){ loadInvites(); }
     if (s==="uikit"){ loadUikit(); }
   }
   // ── クリック→CV：誘導先URL別の クリック(X)・CV(計測ピクセル)・CVR・売上 ──
@@ -2083,6 +2110,74 @@ export const DASHBOARD_HTML = `<!doctype html>
       CHAT_BUSY=false;
       CHAT.push({role:"assistant",content:"通信に失敗しました。電波の良い場所で再度お試しください。"}); chatSave(); chatRender();
     });
+  }
+  // ===== 仲間を招待（リファラル） =====
+  var INV = null;
+  function invMsg(t, ok){ var m=$("invMsg"); if(!m) return; m.textContent=t||""; m.className="msg "+(ok===false?"ng":"ok"); }
+  function loadInvites(){
+    var L=$("invList"); if(L) L.innerHTML="<div class='spin'></div>";
+    var q=$("invQuota"); if(q) q.textContent="…";
+    invMsg("");
+    api("GET","/api/invites").then(function(r){
+      var b=r.body||{}; INV=b;
+      if(!b.ok){
+        var em = b.error==="not_registered" ? "本部との連携がまだ完了していません。先に「アカウント設定」でXとClaudeを連携してください。" :
+                 b.error==="honbu_unconfigured" ? "この環境では招待機能は使えません。" :
+                 "招待情報を取得できませんでした。時間をおいて再度お試しください。";
+        if(L) L.innerHTML="<div class='card'><div class='note' style='color:var(--text)'>"+esc(em)+"</div></div>";
+        if(q) q.textContent="";
+        return;
+      }
+      if($("invCap")) $("invCap").textContent=String(b.cap!=null?b.cap:5);
+      renderInvites(b);
+    });
+  }
+  function renderInvites(b){
+    var q=$("invQuota");
+    if(q) q.textContent="発行 "+(b.issued||0)+" / "+(b.cap||0)+"（残り "+(b.remaining||0)+"）・使われた "+(b.used||0);
+    var btn=$("invNewBtn"); if(btn){ btn.disabled=(b.remaining||0)<=0; btn.style.opacity=(b.remaining||0)<=0?".5":"1"; }
+    var L=$("invList"); if(!L) return;
+    var codes=b.codes||[];
+    if(!codes.length){ L.innerHTML="<div class='card'><div class='note' style='color:var(--text)'>まだ招待コードはありません。上の「招待コードを発行」から作ってください（最大"+(b.cap||5)+"枚）。</div></div>"; return; }
+    var h="";
+    for(var i=0;i<codes.length;i++){
+      var c=codes[i];
+      var badge = c.used ? "<span class='pill' style='background:#eef7f1;color:var(--ok)'>使われました</span>" : "<span class='pill' style='background:var(--accent-bg);color:var(--accent-strong)'>未使用</span>";
+      h+="<div class='card'><div class='row' style='justify-content:space-between;align-items:center;gap:8px'>"+
+         "<div><div style='font-size:18px;font-weight:700;letter-spacing:1px'>"+esc(c.code)+"</div><div style='margin-top:4px'>"+badge+"</div></div>"+
+         "<button class='accent' onclick=\\"inviteCopy('"+esc(c.code)+"')\\"><i class='ti ti-copy'></i> 共有メッセージをコピー</button>"+
+         "</div></div>";
+    }
+    L.innerHTML=h;
+  }
+  function inviteCreate(){
+    var btn=$("invNewBtn"); if(btn){ btn.disabled=true; }
+    invMsg("招待コードを発行しています…", true);
+    api("POST","/api/invites").then(function(r){
+      var b=r.body||{};
+      if(b.ok && b.code){ invMsg("発行しました： "+b.code+"（下に表示されます）", true); loadInvites(); }
+      else {
+        var em = b.error==="cap_reached" ? "招待枠の上限（"+(b.cap||5)+"枚）に達しています。" :
+                 b.error==="not_registered" ? "本部との連携がまだ完了していません。先にXとClaudeを連携してください。" :
+                 "発行できませんでした。時間をおいて再度お試しください。";
+        invMsg(em, false);
+        if(btn){ btn.disabled=false; }
+      }
+    });
+  }
+  function inviteShareText(code){
+    var deploy=(INV&&INV.deploy_url)||"https://deploy.workers.cloudflare.com/?url=https://github.com/sns-migiude/worker";
+    var lp=(INV&&INV.lp_url)||"https://join.sns-migiude.com";
+    return "【SNSの右腕】への招待\\n\\nあなたのXの「右腕」になるAIです。あなたの文体を学習して、発信→学習→改善のサイクルまで自動でまわします。\\n\\n▼はじめ方\\n①下のボタンから自分専用のアプリを作成（Cloudflare無料枠）\\n②最初の設定で招待コードを入力\\n③XとClaudeを連携して完了\\n\\n招待コード："+code+"\\nアプリを作る："+deploy+"\\nくわしく："+lp+"\\n\\n※鍵もデータもあなた自身のCloudflareに保存され、他の人からは見えません。費用はあなた自身のAPI利用分だけです。";
+  }
+  function inviteCopy(code){
+    var t=inviteShareText(code);
+    function done(){ invMsg("共有メッセージをコピーしました（コード "+code+"）。SNSのDMやメールに貼り付けて送ってください。", true); }
+    function fail(){ invMsg("コピーできませんでした。招待コードは "+code+" です（手動でお伝えください）。", false); }
+    try{
+      if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(t).then(done, fail); }
+      else { var ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta); done(); }
+    }catch(e){ fail(); }
   }
   function collectNow(){
     if(!confirm("いまXからメトリクスをまとめて取得します。\\n\\n💳 Xの読み取りAPIを使うため、取得のたびに料金が発生します（通常は1日1回・自動）。\\n実行しますか？")) return;

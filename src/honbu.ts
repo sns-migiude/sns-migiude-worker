@@ -54,6 +54,63 @@ export async function registerWithHonbu(
   }
 }
 
+// この会員の本部トークンを取得（無ければ登録して発行）。リファラル系API用。
+async function memberAuthToken(env: Env): Promise<string | null> {
+  const saved = await getConfig(env, "honbu_token");
+  if (saved) return saved;
+  if (!env.HONBU_URL) return null;
+  const uid = await getMemberUid(env);
+  let label: string | null = null;
+  try {
+    const r = await env.DB.prepare(`SELECT handle FROM accounts WHERE id = ?`).bind(uid).first<{ handle: string | null }>();
+    label = r?.handle ?? null;
+  } catch { /* handle不明でも続行 */ }
+  const email = await getConfig(env, "member_email");
+  return await ensureHonbuToken(env, uid, label, email);
+}
+
+export interface MyInvites {
+  ok: boolean;
+  error?: string;
+  cap?: number;
+  issued?: number;
+  remaining?: number;
+  used?: number;
+  codes?: Array<{ code: string; used: boolean; status: string; created_at: string }>;
+  deploy_url?: string;
+  lp_url?: string;
+}
+
+// リファラル：自分の招待コード一覧を本部から取得。
+export async function listMyInvites(env: Env): Promise<MyInvites> {
+  if (!env.HONBU_URL) return { ok: false, error: "honbu_unconfigured" };
+  const tok = await memberAuthToken(env);
+  if (!tok) return { ok: false, error: "not_registered" };
+  try {
+    const res = await fetch(`${env.HONBU_URL}/hq/my-invites`, { headers: { Authorization: `Bearer ${tok}` } });
+    const d = (await res.json().catch(() => ({}))) as MyInvites;
+    if (!res.ok) return { ok: false, error: d.error || `http_${res.status}` };
+    return d;
+  } catch {
+    return { ok: false, error: "unreachable" };
+  }
+}
+
+// リファラル：新しい招待コードを1枚発行（本部が上限を判定）。
+export async function createMyInvite(env: Env): Promise<MyInvites & { code?: string }> {
+  if (!env.HONBU_URL) return { ok: false, error: "honbu_unconfigured" };
+  const tok = await memberAuthToken(env);
+  if (!tok) return { ok: false, error: "not_registered" };
+  try {
+    const res = await fetch(`${env.HONBU_URL}/hq/my-invites`, { method: "POST", headers: { Authorization: `Bearer ${tok}` } });
+    const d = (await res.json().catch(() => ({}))) as MyInvites & { code?: string };
+    if (!res.ok && !d.error) return { ok: false, error: `http_${res.status}` };
+    return d;
+  } catch {
+    return { ok: false, error: "unreachable" };
+  }
+}
+
 function median(xs: number[]): number {
   const s = xs.filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
   if (!s.length) return 0;
