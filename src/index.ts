@@ -1362,8 +1362,51 @@ export default {
         };
       };
       const monthCalc = buildCalc(writesMonth, readsMonth, learnMonth, aiMonth);
-      // 今月の着地予想＝今のペース（日割り）×月日数。今月以外は出さない。
-      const forecastJpy = isCurrent ? Math.round((monthCalc.total_jpy / daysElapsed) * daysInMonth) : null;
+
+      // ── 今月の予想（スケジュール連動）──
+      // 「1日平均×日数」ではなく、確定スケジュール(daily_frequency/cycle_days)で“量”を、実測トークンで“単価”を出して
+      // 1日あたりの定常コストを積み上げる。一回きり費用（初期の過去ポスト学習＝learn_read）は残り日数に掛けない。
+      const acctRow = await env.DB.prepare(`SELECT daily_frequency, cycle_days FROM accounts WHERE id=?`)
+        .bind(acc).first<{ daily_frequency: number; cycle_days: number }>().catch(() => null);
+      const freq = Math.max(0, acctRow?.daily_frequency ?? 0);
+      // claude_usage を kind×model で集計し、kind別の円・回数に（generate＝定常の主役、exec_note＝学習AI）。
+      const kindAgg = async (binds: unknown[], range: string): Promise<Record<string, { jpy: number; calls: number }>> => {
+        const out: Record<string, { jpy: number; calls: number }> = {};
+        try {
+          const r = await env.DB.prepare(
+            `SELECT kind, model, COUNT(*) AS calls, COALESCE(SUM(in_tokens),0) AS in_t,
+                    COALESCE(SUM(cached_tokens),0) AS cached_t, COALESCE(SUM(out_tokens),0) AS out_t
+               FROM claude_usage WHERE account_id=?${range} GROUP BY kind, model`
+          ).bind(...binds).all<{ kind: string; model: string; calls: number; in_t: number; cached_t: number; out_t: number }>();
+          for (const m of (r.results ?? [])) {
+            const rate = MODEL_RATES[m.model] ?? { in: 5, out: 25, label: m.model };
+            const usd = ((m.in_t + m.cached_t * 0.1) / 1e6) * rate.in + (m.out_t / 1e6) * rate.out;
+            const k = out[m.kind] || { jpy: 0, calls: 0 };
+            k.jpy += Math.round(usd * USDJPY); k.calls += m.calls;
+            out[m.kind] = k;
+          }
+        } catch { /* テーブル未作成等でも止めない */ }
+        return out;
+      };
+      const kindsM = await kindAgg(mB, " AND created_at>=? AND created_at<?");
+      const kindsT = await kindAgg(aB, "");
+      const genM = kindsM["generate"] || { jpy: 0, calls: 0 };
+      const genT = kindsT["generate"] || { jpy: 0, calls: 0 };
+      const execM = kindsM["exec_note"] || { jpy: 0, calls: 0 };
+      const DEFAULT_GEN_JPY = 5; // generate実測がまだ無い間だけ使う「1生成あたり」の概算
+      // 1生成あたりの実測単価（今月→無ければ全期間→無ければ既定）。量はスケジュールで確定するので初日から安定。
+      const avgGenJpy = genM.calls > 0 ? genM.jpy / genM.calls : (genT.calls > 0 ? genT.jpy / genT.calls : DEFAULT_GEN_JPY);
+      const readsPerDay = readsMonth / daysElapsed; // メトリクス取得の実測日平均
+      const execPerDay = execM.jpy / daysElapsed;   // 学習AI(exec_note)を日割り
+      // 1日あたりの定常コスト＝X投稿＋本生成（量は確定×単価は実測）＋メトリクス取得＋学習AI。
+      // ※ learn_read（過去ポスト学習の読み取り）は初月だけの一回きりとみなし、定常には含めない。
+      const steadyDailyJpy = freq * xPostJpy + freq * avgGenJpy + readsPerDay * xReadJpy + execPerDay;
+      const remainingDays = isCurrent ? Math.max(0, daysInMonth - daysElapsed) : 0;
+      // 今月の着地＝これまでの実績（一回きり込み）＋残り日数×定常コスト。
+      const forecastJpy = isCurrent ? Math.round(monthCalc.total_jpy + remainingDays * steadyDailyJpy) : null;
+      // 毎月の定常目安＝定常1日×月日数（初期費用を含まない“ならし”の月額）。
+      const steadyMonthlyJpy = isCurrent ? Math.round(steadyDailyJpy * daysInMonth) : null;
+      const oneTimeJpy = isCurrent ? monthCalc.learn_jpy : null; // 初月だけの大物（過去ポスト学習の読み取り）
       return json({
         account: acc,
         month_label: mKey,
@@ -1371,7 +1414,11 @@ export default {
         can_next: !isCurrent,
         days_elapsed: daysElapsed,
         days_in_month: daysInMonth,
+        daily_frequency: freq,
         forecast_jpy: forecastJpy,
+        steady_monthly_jpy: steadyMonthlyJpy, // 毎月の定常目安（初期費用なし）
+        steady_daily_jpy: isCurrent ? Math.round(steadyDailyJpy) : null,
+        one_time_jpy: oneTimeJpy, // 初月だけの一回きり費用の目安
         assumptions: {
           x_post_usd: X_POST_USD,
           x_read_usd: X_READ_USD,

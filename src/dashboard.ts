@@ -2338,11 +2338,14 @@ export const DASHBOARD_HTML = `<!doctype html>
       USAGE_MONTH = b.month_label || USAGE_MONTH || curYM();
       if ($("usageMonthLabel")) $("usageMonthLabel").textContent = fmtYM(USAGE_MONTH)+(b.is_current?"（今月）":"");
       if ($("usageNextBtn")) $("usageNextBtn").style.visibility = b.can_next ? "visible" : "hidden";
-      // 着地予想（今月のみ）
+      // 着地予想（今月のみ）＝実績＋残り日数×定常コスト（スケジュール連動）。毎月の定常目安も併記。
       if ($("usageForecast")){
-        $("usageForecast").innerHTML = (b.forecast_jpy!=null)
-          ? "<div class='card' style='border-left:3px solid var(--accent)'><div class='note'>今月の着地予想（今のペースのまま進んだ場合）</div><div style='font-size:22px;font-weight:700;color:var(--accent-strong);margin:2px 0'>約 ¥"+comma(b.forecast_jpy)+"</div><div class='note'>"+(b.days_elapsed||0)+"／"+(b.days_in_month||0)+"日の利用から日割りで概算。実際は増減します。</div></div>"
-          : "";
+        if (b.forecast_jpy!=null){
+          var remain = Math.max(0,(b.days_in_month||0)-(b.days_elapsed||0));
+          var oneTime = (b.one_time_jpy>0) ? "<div class='note'>うち初期費用 約 ¥"+comma(b.one_time_jpy)+"（過去ポストの学習など・初月だけ）</div>" : "";
+          var steady = (b.steady_monthly_jpy!=null) ? "<div class='note' style='margin-top:8px'>毎月の目安（定常）：<b>約 ¥"+comma(b.steady_monthly_jpy)+" ／月</b> <span style='opacity:.7'>初期費用を除いた、毎月だいたいの額</span></div>" : "";
+          $("usageForecast").innerHTML = "<div class='card' style='border-left:3px solid var(--accent)'><div class='note'>今月の着地予想</div><div style='font-size:22px;font-weight:700;color:var(--accent-strong);margin:2px 0'>約 ¥"+comma(b.forecast_jpy)+"</div><div class='note'>実績 ＋ 残り"+remain+"日ぶんを、設定スケジュール（1日"+(b.daily_frequency||0)+"本）から概算。</div>"+oneTime+steady+"</div>";
+        } else { $("usageForecast").innerHTML = ""; }
       }
       function row(label, cnt, jpy, unit){ return "<tr><td>"+label+"</td><td class='c'>"+comma(cnt||0)+" "+(unit||"回")+"</td><td class='c'>約 ¥"+comma(jpy||0)+"</td></tr>"; }
       function tbl(title, d){
@@ -2374,6 +2377,7 @@ export const DASHBOARD_HTML = `<!doctype html>
           + "・AI は<b>モデル別に実トークンで計算</b>（雑務はHaiku＝安い／本生成はOpus）：<br>"+ml+"<br>"
           + "・為替は<b>各月の月末時点のレート</b>を取得して換算（当月は最新レート）。<br>"
           + "※ 反応の取得はまとめ取りのことがあり、実際はもっと少ない場合があります（上限寄りの目安）。<br>"
+          + "※ 今月の予想は「実績 ＋ 残り日数 × 定常コスト」。定常＝1日の投稿数と学習サイクルで“量”を確定し、AIは実測の1生成あたりコストで計算。初期の過去ポスト学習など<b>一回きりの費用は月末まで掛けません</b>。<br>"
           + "※ AIのトークン記録はこの機能を入れた以降ぶん。それ以前の生成は計上されません。";
       }
     });
