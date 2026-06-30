@@ -885,9 +885,9 @@ export const DASHBOARD_HTML = `<!doctype html>
     var v=$("verLabel"); if(v) v.textContent="v"+(w.version!=null?w.version:"?");
     var b=$("updBanner"); if(!b) return;
     if(w.update_available){
-      var note=w.update_note?("："+w.update_note):"";
+      var note=w.update_note?("（"+w.update_note+"）"):"";
       var url=w.update_url||"https://join.sns-migiude.com/update";
-      b.innerHTML="<i class='ti ti-rocket'></i> 新しいバージョン <b>v"+w.latest_version+"</b> があります"+esc(note)+" <a href='"+esc(url)+"' target='_blank' rel='noopener' style='color:#4a3206;text-decoration:underline;font-weight:600;margin-left:6px'>更新方法を見る →</a>";
+      b.innerHTML="<i class='ti ti-rocket'></i> 新しいバージョン <b>v"+esc(w.latest_version)+"</b> が公開されました"+esc(note)+"。<b>自動更新がONなら近いうちに自動で反映されます</b>（操作不要）。今すぐ反映したい・自動更新が未設定の場合は <a href='"+esc(url)+"' target='_blank' rel='noopener' style='color:#4a3206;text-decoration:underline;font-weight:600'>更新方法 →</a>";
       b.style.display="block";
     } else { b.style.display="none"; }
   }
