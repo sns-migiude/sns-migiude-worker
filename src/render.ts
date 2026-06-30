@@ -29,7 +29,7 @@ const FONT_FILE: Record<string, string> = {
   "sans-regular": "NotoSansJP-Bold.ttf", // regular未収録のためBoldで代用（公開リポにregularを足したら差し替え）
 };
 // 既定の取得元（会員用 公開リポ同梱のOFLフォント）。公開時に実リポrawへ差し替える。env.FONT_BASE_URL で上書き可。
-const FONT_BASE_URL_DEFAULT = "https://raw.githubusercontent.com/sns-migiude/worker/main/fonts";
+const FONT_BASE_URL_DEFAULT = "https://raw.githubusercontent.com/sns-migiude/sns-migiude-worker/main/fonts";
 
 // R2にフォントが無い新規会員向け：公開元からTTFを取得してR2へ投入（self-healing・以後はR2から読む）。
 async function seedFontToR2(env: Env, key: string, file: string): Promise<Uint8Array | null> {

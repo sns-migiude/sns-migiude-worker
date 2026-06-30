@@ -1,4 +1,4 @@
-# 上流（sns-migiude/worker の main＝安定版）を自分のフォークに毎日取り込む自動同期。
+# 上流（sns-migiude/sns-migiude-worker の main＝安定版）を自分のフォークに毎日取り込む自動同期。
 # これがONだと、運営がアップデートを出すと自動でフォークが更新され、Cloudflareが自動再デプロイします。
 # ※GitHubはfork上のActionを既定で無効化します。フォーク後に一度だけ「Enable workflows」を押してください。
 name: Sync with upstream
@@ -23,7 +23,7 @@ jobs:
         run: |
           git config user.name "sns-migiude-sync"
           git config user.email "sync@users.noreply.github.com"
-          git remote add upstream https://github.com/sns-migiude/worker.git
+          git remote add upstream https://github.com/sns-migiude/sns-migiude-worker.git
           git fetch upstream main
           git checkout main
           git reset --hard upstream/main
