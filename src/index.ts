@@ -1429,7 +1429,7 @@ export default {
           x_post_jpy: Math.round(xPostJpy * 10) / 10,
           x_read_jpy: Math.round(xReadJpy * 10) / 10,
           ai_models: [
-            { label: "Opus（本生成）", in_usd: 5, out_usd: 25 },
+            { label: "Sonnet 5（本生成）", in_usd: 3, out_usd: 15 },
             { label: "Haiku（要約など）", in_usd: 1, out_usd: 5 },
           ],
         },

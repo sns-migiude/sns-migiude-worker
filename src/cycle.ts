@@ -362,7 +362,7 @@ async function updateExecNotes(env: Env, account: Account): Promise<void> {
     if (pairs.length < EXEC_MIN_EDITS) continue;
     try {
       const diffs = pairs.map((p, i) => `【例${i + 1}】AI初稿：${p.before_body}\n会員の直し：${p.after_body}`).join("\n\n");
-      // 微調整＝コピー不能の堀。品質重視でOpus（GEN_MODEL）を使う（頻度は低い＝新添削+2の型だけ）。
+      // 微調整＝コピー不能の堀。品質重視で本生成モデル（GEN_MODEL）を使う（頻度は低い＝新添削+2の型だけ）。
       const noteModel = env.GEN_MODEL || "claude-opus-4-8";
       const { text, usage } = await callClaude({
         apiKey: claudeKey,
