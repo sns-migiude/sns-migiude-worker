@@ -2896,7 +2896,7 @@ export const DASHBOARD_HTML = `<!doctype html>
         h+="</div></div>";
         return h;
       }).join("") : "<p class='note'>予約済みはありません。</p>";
-      $("posted").innerHTML = po.length ? po.map(function(p){ return "<div class='card'>"+threadView(p)+"<div class='note' style='margin-top:6px'>"+esc(p.posted_at||"")+xLink(p.platform_post_id)+"</div></div>"; }).join("") : "<p class='note'>まだ投稿はありません。</p>";
+      $("posted").innerHTML = po.length ? po.map(function(p){ var t=fmtJst(p.posted_at); return "<div class='card'>"+threadView(p)+"<div class='note' style='margin-top:6px'>"+(t?t+" 投稿":"")+xLink(p.platform_post_id)+"</div></div>"; }).join("") : "<p class='note'>まだ投稿はありません。</p>";
       var fa=(r.body&&r.body.failed)||[];
       if ($("failedWrap")) $("failedWrap").style.display = fa.length?"block":"none";
       if ($("failed")) $("failed").innerHTML = fa.map(function(p){
