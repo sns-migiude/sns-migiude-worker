@@ -33,7 +33,7 @@ import { callClaude, verifyClaudeKey } from "./claude";
 import { HELP_SPEC, HELP_RULES } from "./help";
 import { generateDrafts } from "./generate";
 import { logClaudeUsage } from "./usage";
-import { syncHonbu, pullFromHonbu, registerWithHonbu, listMyInvites, createMyInvite } from "./honbu";
+import { syncHonbu, pullFromHonbu, registerWithHonbu, listMyInvites } from "./honbu";
 import { getPromptPack, refreshPrompts, hydrateFromCache } from "./prompts";
 import { TYPE_INSTRUCTIONS, CATALOG, CATALOG_KEYS, DEFAULT_ON, DEFAULT_ON_FREE, isLongType, PATTERNS, metaOf, URL_TYPE_INSTRUCTION, URL_STYLES, resolveImageType } from "./taxonomy";
 
@@ -2590,13 +2590,9 @@ export default {
     }
 
     // AIに聞く（操作サポート）：会員のClaudeに仕様書(HELP_SPEC)を渡して質問へ回答。安いHaiku・料金は会員負担。
-    // リファラル：自分の招待コード一覧（上限・残り・共有URL込み）
+    // リファラル：自分の招待コード（1人1種類・有効回数つき・残り有効数つき）。無ければ本部が自動発行。
     if (req.method === "GET" && url.pathname === "/api/invites") {
       return json(await listMyInvites(env));
-    }
-    // リファラル：招待コードを1枚発行（本部が上限判定）
-    if (req.method === "POST" && url.pathname === "/api/invites") {
-      return json(await createMyInvite(env));
     }
 
     if (req.method === "POST" && url.pathname === "/api/help-ask") {

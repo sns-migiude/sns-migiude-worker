@@ -666,17 +666,10 @@ export const DASHBOARD_HTML = `<!doctype html>
 
       <section id="s-invite" class="screen hidden">
         <h2>仲間を招待</h2>
-        <p class="lead">いまは招待制です。あなたから最大<b id="invCap">5</b>人まで招待できます。あなたが渡したコードを使った人は、運営の承認を待たずにそのまま始められます。</p>
+        <p class="lead">いまは招待制です。あなた専用の<b>招待コード（1つ）</b>で仲間を誘えます。このコードを使った人は、運営の承認を待たずにそのまま始められます。</p>
 
-        <div class="card" style="background:var(--accent-bg);border-color:#b5d4f4">
-          <div class="row" style="justify-content:space-between;align-items:center;gap:10px">
-            <div><b>招待枠</b> <span id="invQuota" class="note" style="color:var(--text);font-size:14px">…</span></div>
-            <button class="primary" id="invNewBtn" onclick="inviteCreate()"><i class="ti ti-plus"></i> 招待コードを発行</button>
-          </div>
-          <div id="invMsg" class="msg" style="margin:8px 0 0"></div>
-        </div>
-
-        <div id="invList"><div class="spin"></div></div>
+        <div id="invCard"><div class="spin"></div></div>
+        <div id="invMsg" class="msg"></div>
 
         <div class="card">
           <b>招待された人の始め方（共有メッセージに含まれます）</b>
@@ -2111,73 +2104,62 @@ export const DASHBOARD_HTML = `<!doctype html>
       CHAT.push({role:"assistant",content:"通信に失敗しました。電波の良い場所で再度お試しください。"}); chatSave(); chatRender();
     });
   }
-  // ===== 仲間を招待（リファラル） =====
+  // ===== 仲間を招待（リファラル・1人1種類のコード） =====
   var INV = null;
   function invMsg(t, ok){ var m=$("invMsg"); if(!m) return; m.textContent=t||""; m.className="msg "+(ok===false?"ng":"ok"); }
   function loadInvites(){
-    var L=$("invList"); if(L) L.innerHTML="<div class='spin'></div>";
-    var q=$("invQuota"); if(q) q.textContent="…";
+    var C=$("invCard"); if(C) C.innerHTML="<div class='spin'></div>";
     invMsg("");
     api("GET","/api/invites").then(function(r){
       var b=r.body||{}; INV=b;
-      if(!b.ok){
-        var em = b.error==="not_registered" ? "本部との連携がまだ完了していません。先に「アカウント設定」でXとClaudeを連携してください。" :
+      if(!b.ok || !b.code){
+        var em = b.error==="not_registered" ? "本部との連携がまだ完了していません。先に「アカウント設定」でXとClaudeを連携してください。連携すると、あなた専用の招待コードが発行されます。" :
                  b.error==="honbu_unconfigured" ? "この環境では招待機能は使えません。" :
-                 "招待情報を取得できませんでした。時間をおいて再度お試しください。";
-        if(L) L.innerHTML="<div class='card'><div class='note' style='color:var(--text)'>"+esc(em)+"</div></div>";
-        if(q) q.textContent="";
+                 "招待コードを取得できませんでした。時間をおいて再度お試しください。";
+        if(C) C.innerHTML="<div class='card'><div class='note' style='color:var(--text)'>"+esc(em)+"</div></div>";
         return;
       }
-      if($("invCap")) $("invCap").textContent=String(b.cap!=null?b.cap:5);
-      renderInvites(b);
+      renderInvite(b);
     });
   }
-  function renderInvites(b){
-    var q=$("invQuota");
-    if(q) q.textContent="発行 "+(b.issued||0)+" / "+(b.cap||0)+"（残り "+(b.remaining||0)+"）・使われた "+(b.used||0);
-    var btn=$("invNewBtn"); if(btn){ btn.disabled=(b.remaining||0)<=0; btn.style.opacity=(b.remaining||0)<=0?".5":"1"; }
-    var L=$("invList"); if(!L) return;
-    var codes=b.codes||[];
-    if(!codes.length){ L.innerHTML="<div class='card'><div class='note' style='color:var(--text)'>まだ招待コードはありません。上の「招待コードを発行」から作ってください（最大"+(b.cap||5)+"枚）。</div></div>"; return; }
-    var h="";
-    for(var i=0;i<codes.length;i++){
-      var c=codes[i];
-      var badge = c.used ? "<span class='pill' style='background:#eef7f1;color:var(--ok)'>使われました</span>" : "<span class='pill' style='background:var(--accent-bg);color:var(--accent-strong)'>未使用</span>";
-      h+="<div class='card'><div class='row' style='justify-content:space-between;align-items:center;gap:8px'>"+
-         "<div><div style='font-size:18px;font-weight:700;letter-spacing:1px'>"+esc(c.code)+"</div><div style='margin-top:4px'>"+badge+"</div></div>"+
-         "<button class='accent' onclick=\\"inviteCopy('"+esc(c.code)+"')\\"><i class='ti ti-copy'></i> 共有メッセージをコピー</button>"+
-         "</div></div>";
-    }
-    L.innerHTML=h;
-  }
-  function inviteCreate(){
-    var btn=$("invNewBtn"); if(btn){ btn.disabled=true; }
-    invMsg("招待コードを発行しています…", true);
-    api("POST","/api/invites").then(function(r){
-      var b=r.body||{};
-      if(b.ok && b.code){ invMsg("発行しました： "+b.code+"（下に表示されます）", true); loadInvites(); }
-      else {
-        var em = b.error==="cap_reached" ? "招待枠の上限（"+(b.cap||5)+"枚）に達しています。" :
-                 b.error==="not_registered" ? "本部との連携がまだ完了していません。先にXとClaudeを連携してください。" :
-                 "発行できませんでした。時間をおいて再度お試しください。";
-        invMsg(em, false);
-        if(btn){ btn.disabled=false; }
-      }
-    });
+  function renderInvite(b){
+    var C=$("invCard"); if(!C) return;
+    var remaining=(b.remaining!=null?b.remaining:0), maxu=(b.max_uses!=null?b.max_uses:0), used=(b.used!=null?b.used:0);
+    var none = remaining<=0;
+    var bar = none ? "<span class='pill' style='background:#fdecea;color:var(--danger)'>残り0（使い切りました）</span>"
+                   : "<span class='pill' style='background:var(--accent-bg);color:var(--accent-strong)'>残り有効数 "+remaining+" / "+maxu+"</span>";
+    var h="<div class='card' style='background:var(--accent-bg);border-color:#b5d4f4'>"+
+      "<div class='note' style='color:var(--text);margin-bottom:4px'>あなた専用の招待コード</div>"+
+      "<div style='font-size:26px;font-weight:700;letter-spacing:2px'>"+esc(b.code)+"</div>"+
+      "<div style='margin:8px 0 12px'>"+bar+" <span class='note'>（使われた回数 "+used+"）</span></div>"+
+      "<div class='row' style='gap:8px'>"+
+        "<button class='primary' onclick=\\"inviteCopy('"+esc(b.code)+"')\\"><i class='ti ti-copy'></i> 共有メッセージをコピー</button>"+
+        "<button class='soft' onclick=\\"inviteCopyCode('"+esc(b.code)+"')\\"><i class='ti ti-clipboard'></i> コードだけコピー</button>"+
+      "</div>"+
+      (none?"<div class='note' style='margin-top:10px;color:var(--text)'>招待枠を使い切りました。もっと招待したい場合は運営にご相談ください。</div>":"")+
+    "</div>";
+    C.innerHTML=h;
   }
   function inviteShareText(code){
     var deploy=(INV&&INV.deploy_url)||"https://deploy.workers.cloudflare.com/?url=https://github.com/sns-migiude/worker";
     var lp=(INV&&INV.lp_url)||"https://join.sns-migiude.com";
     return "【SNSの右腕】への招待\\n\\nあなたのXの「右腕」になるAIです。あなたの文体を学習して、発信→学習→改善のサイクルまで自動でまわします。\\n\\n▼はじめ方\\n①下のボタンから自分専用のアプリを作成（Cloudflare無料枠）\\n②最初の設定で招待コードを入力\\n③XとClaudeを連携して完了\\n\\n招待コード："+code+"\\nアプリを作る："+deploy+"\\nくわしく："+lp+"\\n\\n※鍵もデータもあなた自身のCloudflareに保存され、他の人からは見えません。費用はあなた自身のAPI利用分だけです。";
   }
-  function inviteCopy(code){
-    var t=inviteShareText(code);
-    function done(){ invMsg("共有メッセージをコピーしました（コード "+code+"）。SNSのDMやメールに貼り付けて送ってください。", true); }
-    function fail(){ invMsg("コピーできませんでした。招待コードは "+code+" です（手動でお伝えください）。", false); }
+  function inviteClip(text, done, fail){
     try{
-      if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(t).then(done, fail); }
-      else { var ta=document.createElement("textarea"); ta.value=t; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta); done(); }
+      if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(done, fail); }
+      else { var ta=document.createElement("textarea"); ta.value=text; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta); done(); }
     }catch(e){ fail(); }
+  }
+  function inviteCopy(code){
+    inviteClip(inviteShareText(code),
+      function(){ invMsg("共有メッセージをコピーしました（コード "+code+"）。SNSのDMやメールに貼り付けて送ってください。", true); },
+      function(){ invMsg("コピーできませんでした。招待コードは "+code+" です（手動でお伝えください）。", false); });
+  }
+  function inviteCopyCode(code){
+    inviteClip(code,
+      function(){ invMsg("招待コードをコピーしました： "+code, true); },
+      function(){ invMsg("コピーできませんでした。招待コードは "+code+" です。", false); });
   }
   function collectNow(){
     if(!confirm("いまXからメトリクスをまとめて取得します。\\n\\n💳 Xの読み取りAPIを使うため、取得のたびに料金が発生します（通常は1日1回・自動）。\\n実行しますか？")) return;

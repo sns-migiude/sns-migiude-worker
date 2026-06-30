@@ -69,19 +69,20 @@ async function memberAuthToken(env: Env): Promise<string | null> {
   return await ensureHonbuToken(env, uid, label, email);
 }
 
+// リファラル：1人1種類の招待コード（有効回数つき）。
 export interface MyInvites {
   ok: boolean;
   error?: string;
-  cap?: number;
-  issued?: number;
-  remaining?: number;
-  used?: number;
-  codes?: Array<{ code: string; used: boolean; status: string; created_at: string }>;
+  code?: string;
+  max_uses?: number; // 有効回数（1人が招待できる人数）
+  used?: number;     // 使用済み回数
+  remaining?: number; // 残り有効数
+  status?: string;
   deploy_url?: string;
   lp_url?: string;
 }
 
-// リファラル：自分の招待コード一覧を本部から取得。
+// リファラル：自分の招待コード（無ければ自動発行）を本部から取得。
 export async function listMyInvites(env: Env): Promise<MyInvites> {
   if (!env.HONBU_URL) return { ok: false, error: "honbu_unconfigured" };
   const tok = await memberAuthToken(env);
@@ -90,21 +91,6 @@ export async function listMyInvites(env: Env): Promise<MyInvites> {
     const res = await fetch(`${env.HONBU_URL}/hq/my-invites`, { headers: { Authorization: `Bearer ${tok}` } });
     const d = (await res.json().catch(() => ({}))) as MyInvites;
     if (!res.ok) return { ok: false, error: d.error || `http_${res.status}` };
-    return d;
-  } catch {
-    return { ok: false, error: "unreachable" };
-  }
-}
-
-// リファラル：新しい招待コードを1枚発行（本部が上限を判定）。
-export async function createMyInvite(env: Env): Promise<MyInvites & { code?: string }> {
-  if (!env.HONBU_URL) return { ok: false, error: "honbu_unconfigured" };
-  const tok = await memberAuthToken(env);
-  if (!tok) return { ok: false, error: "not_registered" };
-  try {
-    const res = await fetch(`${env.HONBU_URL}/hq/my-invites`, { method: "POST", headers: { Authorization: `Bearer ${tok}` } });
-    const d = (await res.json().catch(() => ({}))) as MyInvites & { code?: string };
-    if (!res.ok && !d.error) return { ok: false, error: `http_${res.status}` };
     return d;
   } catch {
     return { ok: false, error: "unreachable" };
