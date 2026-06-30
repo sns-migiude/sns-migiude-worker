@@ -458,8 +458,12 @@ async function handleStatus(env: Env, accountId: string): Promise<Response> {
     .bind(accountId)
     .all();
   const recent = await env.DB.prepare(
-    `SELECT id, body, reply_text, platform_post_id, posted_at FROM posts
-     WHERE account_id = ? AND status = 'posted' ORDER BY posted_at DESC LIMIT 10`
+    `SELECT p.id, p.body, p.reply_text, p.platform_post_id, p.posted_at, p.hook,
+            m.impressions, m.likes, m.reposts, m.replies
+       FROM posts p
+       LEFT JOIN post_metrics m ON m.post_id = p.id
+         AND m.fetched_at = (SELECT MAX(m2.fetched_at) FROM post_metrics m2 WHERE m2.post_id = p.id)
+      WHERE p.account_id = ? AND p.status = 'posted' ORDER BY p.posted_at DESC LIMIT 30`
   )
     .bind(accountId)
     .all();

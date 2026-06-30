@@ -283,34 +283,45 @@ export const DASHBOARD_HTML = `<!doctype html>
       <section id="s-scheduled" class="screen hidden">
         <h2>予約済み＆投稿済み</h2>
         <p class="lead">これから自動で出る予定の投稿と、出し終えた投稿の一覧です。時刻の調整・削除もできます。</p>
-        <div class="card">
-          <div style="font-weight:500;margin-bottom:6px">基本の配信タイミング</div>
-          <div class="note" style="margin-bottom:8px">1日に出す<b id="freqLabel"></b>の、それぞれの時刻を決めます（JST）。本数は「学習データ＆サイクル」で変更できます。<br>⏱ 実際の投稿は<b>前後10分ほどゆらぎます</b>（毎回きっかり同じ時刻だと機械的なので、自然なゆらぎを入れています）。</div>
-          <div id="slotInputs"></div>
-          <div class="row" style="margin-top:10px"><button class="primary" onclick="saveSlots(false)">保存</button><button class="soft" onclick="saveSlots(true)">保存して予約を組み直す</button></div>
+
+        <div class="row" style="gap:8px;margin:4px 0 14px">
+          <span class="rtab on" id="sctab-queued" onclick="schedTab('queued')">予約中 <span id="qCount"></span></span>
+          <span class="rtab" id="sctab-posted" onclick="schedTab('posted')">投稿済み <span id="pCount"></span></span>
         </div>
-        <div class="row" style="justify-content:space-between;align-items:center;margin:14px 0 4px;gap:8px;flex-wrap:wrap">
-          <h3 style="font-size:15px;font-weight:500;margin:0">予約済み（投稿待ち）</h3>
-          <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
-            <button class="soft" id="cancelBtn" onclick="cancelQueued()" title="今ある予約（投稿待ち）をすべて削除します。投稿済み・添削待ちは消えません">🗑 予約を全てキャンセルする</button>
-            <span class="row" style="gap:4px;align-items:center">
-              <select id="genDays" style="width:auto"><option value="1">1日分</option><option value="2">2日分</option><option value="3" selected>3日分</option></select>
-              <button class="primary" id="genBtn" onclick="genDays()" title="選んだ日数分のポストを最新の学習で生成して予約に追加します">✨ 生成する</button>
-            </span>
+
+        <div id="scpane-queued">
+          <div class="card">
+            <div style="font-weight:500;margin-bottom:6px">基本の配信タイミング</div>
+            <div class="note" style="margin-bottom:8px">1日に出す<b id="freqLabel"></b>の、それぞれの時刻を決めます（JST）。本数は「学習データ＆サイクル」で変更できます。<br>⏱ 実際の投稿は<b>前後10分ほどゆらぎます</b>（毎回きっかり同じ時刻だと機械的なので、自然なゆらぎを入れています）。</div>
+            <div id="slotInputs"></div>
+            <div class="row" style="margin-top:10px"><button class="primary" onclick="saveSlots(false)">保存</button><button class="soft" onclick="saveSlots(true)">保存して予約を組み直す</button></div>
           </div>
-          <div class="note" style="margin:4px 0 0;opacity:.85">💳 生成すると、あなたのClaude APIに料金が発生します（ポスト1本あたり約3〜5円。画像付きはカード要約ぶんが少し加算）。</div>
+          <div class="row" style="justify-content:space-between;align-items:center;margin:14px 0 4px;gap:8px;flex-wrap:wrap">
+            <h3 style="font-size:15px;font-weight:500;margin:0">予約済み（投稿待ち）</h3>
+            <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+              <button class="soft" id="cancelBtn" onclick="cancelQueued()" title="今ある予約（投稿待ち）をすべて削除します。投稿済み・添削待ちは消えません">🗑 予約を全てキャンセルする</button>
+              <span class="row" style="gap:4px;align-items:center">
+                <select id="genDays" style="width:auto"><option value="1">1日分</option><option value="2">2日分</option><option value="3" selected>3日分</option></select>
+                <button class="primary" id="genBtn" onclick="genDays()" title="選んだ日数分のポストを最新の学習で生成して予約に追加します">✨ 生成する</button>
+              </span>
+            </div>
+            <div class="note" style="margin:4px 0 0;opacity:.85">💳 生成すると、あなたのClaude APIに料金が発生します（ポスト1本あたり約3〜5円。画像付きはカード要約ぶんが少し加算）。</div>
+          </div>
+          <div id="queued"></div>
+          <div id="failedWrap" style="display:none">
+            <h3 style="font-size:15px;font-weight:500;margin:18px 0 4px;color:#c0392b">⚠️ 投稿エラー（X側で弾かれたもの）</h3>
+            <div id="failed"></div>
+          </div>
         </div>
-        <div id="queued"></div>
-        <div id="failedWrap" style="display:none">
-          <h3 style="font-size:15px;font-weight:500;margin:18px 0 4px;color:#c0392b">⚠️ 投稿エラー（X側で弾かれたもの）</h3>
-          <div id="failed"></div>
+
+        <div id="scpane-posted" class="hidden">
+          <p class="note" style="margin:0 0 10px">投稿した順に並びます（新しい順）。反応の数字は毎日自動で集計され、ここに反映されます。</p>
+          <div id="posted"></div>
+          <details style="margin-top:18px">
+            <summary class="note" style="cursor:pointer;font-size:15px">不採用（★4以下で評価したもの・学習に使われます）</summary>
+            <div id="notAdopted" style="margin-top:8px"></div>
+          </details>
         </div>
-        <h3 style="font-size:15px;font-weight:500;margin:18px 0 4px">投稿済み</h3>
-        <div id="posted"></div>
-        <details style="margin-top:18px">
-          <summary class="note" style="cursor:pointer;font-size:15px">不採用（★4以下で評価したもの・学習に使われます）</summary>
-          <div id="notAdopted" style="margin-top:8px"></div>
-        </details>
       </section>
 
       <section id="s-learn" class="screen hidden">
@@ -2874,6 +2885,15 @@ export const DASHBOARD_HTML = `<!doctype html>
     if ($("freqLabel")) $("freqLabel").textContent = n+"本";
   }
   var schedBodies={}; var schedReplies={}; var schedImg={}; var schedLimit=140;
+  function schedTab(which){
+    ["queued","posted"].forEach(function(t){
+      var pane=$("scpane-"+t); if(pane) pane.classList.toggle("hidden", t!==which);
+      var tab=$("sctab-"+t); if(tab) tab.classList.toggle("on", t===which);
+    });
+  }
+  function postedStat(label,val){
+    return "<div style='min-width:54px'><div class='note' style='font-size:11px'>"+esc(label)+"</div><div style='font-size:16px;font-weight:600'>"+(val==null?"–":comma(val))+"</div></div>";
+  }
   function loadScheduled(){
     api("GET","/api/status?account="+ACC).then(function(r){
       var q=(r.body&&r.body.next_up)||[]; var po=(r.body&&r.body.recently_posted)||[];
@@ -2896,7 +2916,28 @@ export const DASHBOARD_HTML = `<!doctype html>
         h+="</div></div>";
         return h;
       }).join("") : "<p class='note'>予約済みはありません。</p>";
-      $("posted").innerHTML = po.length ? po.map(function(p){ var t=fmtJst(p.posted_at); return "<div class='card'>"+threadView(p)+"<div class='note' style='margin-top:6px'>"+(t?t+" 投稿":"")+xLink(p.platform_post_id)+"</div></div>"; }).join("") : "<p class='note'>まだ投稿はありません。</p>";
+      if($("qCount")) $("qCount").textContent = q.length?("("+q.length+")"):"";
+      if($("pCount")) $("pCount").textContent = po.length?("("+po.length+")"):"";
+      $("posted").innerHTML = po.length ? po.map(function(p){
+        var t=fmtJst(p.posted_at);
+        var h="<div class='card'>";
+        h+="<div class='row' style='justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px'>";
+        h+="<span class='note'><i class='ti ti-calendar-check'></i> "+(t?t+" に投稿":"投稿済み")+"</span>";
+        h+="<span>"+xLink(p.platform_post_id)+"</span>";
+        h+="</div>";
+        h+=hookLabelHtml(p.hook);
+        h+=threadView(p);
+        var hasM = (p.impressions!=null)||(p.likes!=null)||(p.reposts!=null);
+        if(hasM){
+          h+="<div class='row' style='gap:16px;margin-top:8px;border-top:1px solid var(--border);padding-top:8px'>";
+          h+=postedStat("表示",p.impressions)+postedStat("いいね",p.likes)+postedStat("リポスト",p.reposts)+postedStat("返信",p.replies);
+          h+="</div>";
+        } else {
+          h+="<div class='note' style='margin-top:8px;border-top:1px solid var(--border);padding-top:8px'>反応はまだ集計されていません（毎日自動で集計されます）。</div>";
+        }
+        h+="</div>";
+        return h;
+      }).join("") : "<p class='note'>まだ投稿はありません。投稿が出ると、ここに反応とあわせて並びます。</p>";
       var fa=(r.body&&r.body.failed)||[];
       if ($("failedWrap")) $("failedWrap").style.display = fa.length?"block":"none";
       if ($("failed")) $("failed").innerHTML = fa.map(function(p){
