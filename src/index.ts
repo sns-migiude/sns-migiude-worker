@@ -59,7 +59,7 @@ async function urlSampleInstr(env: Env, accountId: string, angle: string): Promi
 }
 import { renderCardPng, presetTheme, CARD_PRESETS, CARD_FONTS, isImageType, normImageType, type CardTheme } from "./render";
 import { collectMetrics, collectReplies } from "./collect";
-import { runCycle, generateSamples, regenerateForAccount, cancelQueuedForAccount, generateDaysForAccount } from "./cycle";
+import { runCycle, generateSamples, regenerateForAccount, cancelQueuedForAccount, generateDaysForAccount, inventoryCap } from "./cycle";
 import { distillCardText } from "./generate";
 import { nextQueueSlot, reflowQueue, getAccountSlots, sqlUtc } from "./schedule";
 import { DASHBOARD_HTML } from "./dashboard";
@@ -855,7 +855,8 @@ export default {
       const b = (await req.json().catch(() => null)) as { account?: string; days?: number } | null;
       if (!b?.account) return json({ error: "account は必須" }, 400);
       try {
-        const r = await generateDaysForAccount(env, b.account, Number(b.days) || 1);
+        const r = await generateDaysForAccount(env, b.account); // 常に1日分（在庫上限まで）
+        if (r.at_cap) return json({ ok: false, at_cap: true, error: `予約の在庫が上限（${r.cap}本）です。今ある予約が投稿されると、また追加できます。` }, 200);
         return json({ ok: true, ...r });
       } catch (e) {
         return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 200);
@@ -891,11 +892,18 @@ export default {
       const id = Number(editMatch[1]);
       // 承認待ち(pending)・不採用(rated)・投稿失敗(failed)を、添削して採用（再予約）できる
       const post = await env.DB.prepare(
-        `SELECT account_id, body, reply_text FROM posts WHERE id = ? AND status IN ('pending','rated','failed')`
+        `SELECT account_id, body, reply_text, status FROM posts WHERE id = ? AND status IN ('pending','rated','failed')`
       )
         .bind(id)
-        .first<{ account_id: string; body: string; reply_text: string | null }>();
+        .first<{ account_id: string; body: string; reply_text: string | null; status: string }>();
       if (!post) return json({ error: "該当するポストがありません" }, 404);
+      // 在庫を増やす採用（不採用/失敗→予約）は在庫上限を尊重。pending→予約は在庫数が変わらないので対象外。
+      if (post.status === "rated" || post.status === "failed") {
+        const ac = await env.DB.prepare(`SELECT daily_frequency, cycle_days FROM accounts WHERE id = ?`).bind(post.account_id).first<{ daily_frequency: number; cycle_days: number }>();
+        const cap = inventoryCap({ daily_frequency: ac?.daily_frequency ?? 3, cycle_days: ac?.cycle_days ?? 5 });
+        const have = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM posts WHERE account_id = ? AND status IN ('queued','pending')`).bind(post.account_id).first<{ n: number }>())?.n ?? 0;
+        if (have >= cap) return json({ ok: false, at_cap: true, error: `予約の在庫が上限（${cap}本）です。先に予約を消化してから採用してください。` }, 200);
+      }
       // 文字数上限（有料プランは長文OK）
       const editLimit = charLimitWeighted(await isPremium(env, post.account_id));
       if (weightedLength(newBody) > editLimit) {
@@ -917,7 +925,7 @@ export default {
       }
       const editSlot = await nextQueueSlot(env, post.account_id); // 次の投稿スロットを予約
       await env.DB.prepare(
-        `UPDATE posts SET body = ?, reply_text = COALESCE(?, reply_text), status = 'queued', not_before = ?, chars = ?, line_breaks = ? WHERE id = ?`
+        `UPDATE posts SET body = ?, reply_text = COALESCE(?, reply_text), status = 'queued', source = 'manual', not_before = ?, chars = ?, line_breaks = ? WHERE id = ?`
       )
         .bind(newBody, newReply, editSlot, weightedLength(newBody), (newBody.match(/\n/g) ?? []).length, id)
         .run();
@@ -2410,7 +2418,7 @@ export default {
         return json({ ok: false, error: `2本目も${Math.floor(limit / 2)}文字以内にしてください（Xの上限）` }, 400);
       }
       await env.DB.prepare(
-        `UPDATE posts SET body = ?, reply_text = COALESCE(?, reply_text), chars = ?, line_breaks = ? WHERE id = ?`
+        `UPDATE posts SET body = ?, reply_text = COALESCE(?, reply_text), source = 'manual', chars = ?, line_breaks = ? WHERE id = ?`
       )
         .bind(newBody, newReply, weightedLength(newBody), (newBody.match(/\n/g) ?? []).length, id)
         .run();

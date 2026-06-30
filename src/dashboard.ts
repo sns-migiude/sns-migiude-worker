@@ -302,8 +302,7 @@ export const DASHBOARD_HTML = `<!doctype html>
             <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
               <button class="soft" id="cancelBtn" onclick="cancelQueued()" title="今ある予約（投稿待ち）をすべて削除します。投稿済み・添削待ちは消えません">🗑 予約を全てキャンセルする</button>
               <span class="row" style="gap:4px;align-items:center">
-                <select id="genDays" style="width:auto"><option value="1">1日分</option><option value="2">2日分</option><option value="3" selected>3日分</option></select>
-                <button class="primary" id="genBtn" onclick="genDays()" title="選んだ日数分のポストを最新の学習で生成して予約に追加します">✨ 生成する</button>
+                <button class="primary" id="genBtn" onclick="genDays()" title="今の学習で1日分のポストを生成して予約に追加します（在庫上限まで）。一度に作れるのは1日分です">✨ 1日分を追加</button>
               </span>
             </div>
             <div class="note" style="margin:4px 0 0;opacity:.85">💳 生成すると、あなたのClaude APIに料金が発生します（ポスト1本あたり約3〜5円。画像付きはカード要約ぶんが少し加算）。</div>
@@ -2923,7 +2922,7 @@ export const DASHBOARD_HTML = `<!doctype html>
       if(cInfo){
         if(ct){
           var started=r.body&&r.body.cycle_started;
-          cInfo.innerHTML="<b><i class='ti ti-refresh'></i> 学習サイクル："+ct+"日サイクルの "+(started?(cd+"日目"):"開始前")+"</b><div class='note' style='margin-top:3px;color:var(--text)'>毎朝6時に在庫を補充（1回で最大「1日分」）。"+ct+"日ごとに学習し直します。在庫が1日分を切ると、サイクルを待たずに補充します。</div>";
+          cInfo.innerHTML="<b><i class='ti ti-refresh'></i> 学習サイクル："+ct+"日サイクルの "+(started?(cd+"日目"):"開始前")+"</b><div class='note' style='margin-top:3px;color:var(--text)'>"+ct+"日ごとのサイクル切替で学習し直し、未投稿の予約を最新の傾向で作り直します。サイクルの途中で在庫が1日分を切ったら、そのサイクルの学習のまま補充します（学習は据え置き＝同じサイクルの傾向で揃えます）。在庫の上限は「1日の本数 × "+ct+"日」です。</div>";
           cInfo.style.display="block";
         } else { cInfo.style.display="none"; }
       }
@@ -3053,16 +3052,16 @@ export const DASHBOARD_HTML = `<!doctype html>
     });
   }
   function genDays(){
-    var days=($("genDays")&&$("genDays").value)||"3";
     var btn=$("genBtn"); if(btn){ btn.disabled=true; btn.textContent="生成中…"; }
-    api("POST","/api/account/generate-days",{account:ACC,days:parseInt(days,10)||1}).then(function(r){
-      if(btn){ btn.disabled=false; btn.textContent="✨ 生成する"; }
+    api("POST","/api/account/generate-days",{account:ACC}).then(function(r){
+      if(btn){ btn.disabled=false; btn.textContent="✨ 1日分を追加"; }
       if(r.body&&r.body.ok){
         var made=r.body.generated||0;
         var where=(r.body.mode==="auto")?"予約済み":"下書き（添削待ち）";
-        msg(made+"本を"+where+"に生成しました（"+days+"日分）。");
+        msg(made+"本を"+where+"に追加しました（1日分）。");
         loadScheduled(); refreshBadges();
-      } else { msg((r.body&&r.body.error)||"生成に失敗しました。",false); }
+      } else if(r.body&&r.body.at_cap){ msg(r.body.error||"予約の在庫が上限です。",false); }
+      else { msg((r.body&&r.body.error)||"生成に失敗しました。",false); }
     });
   }
 

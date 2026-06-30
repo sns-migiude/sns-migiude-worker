@@ -530,24 +530,26 @@ async function genOmakase(env: Env, account: Account, count: number, guide: stri
   return out;
 }
 
-// dayspan>0＝手動「N日分生成」（在庫に関係なくN日分を作る。暴走防止に上限30）。dayspan=0＝通常サイクル（在庫上限まで・1日分）。
-async function replenishForAccount(env: Env, account: Account, dayspan = 0): Promise<number> {
+// 在庫の上限＝1日の本数 × サイクル日数（サイクル日数3〜5なので最大＝本数×5）。これを超えて貯めない。
+export function inventoryCap(account: { daily_frequency: number; cycle_days: number }): number {
+  return Math.max(account.daily_frequency * account.cycle_days, account.daily_frequency * 2);
+}
+// dayspan>0＝手動「1日分追加」（在庫上限まで・1日分）。dayspan=0＝通常サイクル（在庫上限まで・1日分）。
+// src＝挿入する source。'tool'＝自動生成（サイクル切替で作り直し対象）。'manual'＝手動生成（会員操作＝作り直しで消さない）。
+async function replenishForAccount(env: Env, account: Account, dayspan = 0, src: "tool" | "manual" = "tool"): Promise<number> {
   const perDay = Math.max(account.daily_frequency, 1);
-  const target = Math.max(
-    account.daily_frequency * account.cycle_days,
-    account.daily_frequency * 2
-  );
+  const target = inventoryCap(account);
   const q = await env.DB.prepare(
     `SELECT COUNT(*) AS n FROM posts WHERE account_id = ? AND status IN ('queued','pending')`
   )
     .bind(account.id)
     .first<{ n: number }>();
   const have = q?.n ?? 0;
+  if (have >= target) return 0; // 在庫上限：これ以上は作らない（手動・自動とも）
   let need: number;
   if (dayspan > 0) {
-    need = Math.min(perDay * dayspan, 30); // 手動：N日分を必ず作る（上限30）
+    need = Math.min(perDay * dayspan, target - have); // 手動：1日分まで・上限を超えない
   } else {
-    if (have >= target) return 0;
     need = Math.min(target - have, perDay); // 通常サイクル：1日分まで
   }
   if (need <= 0) return 0;
@@ -634,10 +636,11 @@ async function replenishForAccount(env: Env, account: Account, dayspan = 0): Pro
     const notBefore = status === "queued" ? await nextQueueSlot(env, account.id) : null;
     await env.DB.prepare(
       `INSERT INTO posts (account_id, platform, source, body, reply_text, hook, status, not_before, chars, line_breaks, link_code)
-       VALUES (?, 'x', 'tool', ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, 'x', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
       .bind(
         account.id,
+        src,
         d.body,
         d.reply_text ?? null,
         d.hook ?? null,
@@ -696,22 +699,14 @@ export async function generateSamples(
   return inserted;
 }
 
-// このアカウントのサイクルを今回す必要があるか。
-async function isCycleDue(env: Env, account: Account): Promise<boolean> {
-  // 在庫が1日分を切ったら即（緊急補充）
-  const q = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM posts WHERE account_id = ? AND status IN ('queued','pending')`
-  )
-    .bind(account.id)
-    .first<{ n: number }>();
-  if ((q?.n ?? 0) < account.daily_frequency) return true;
-
+// サイクルが切り替わったか（cycle_days経過 or 初回）。学習＆作り直しはこの時だけ＝厳密にサイクルを保持。
+async function isCycleTurn(env: Env, account: Account): Promise<boolean> {
   const st = await env.DB.prepare(
     `SELECT updated_at FROM cycle_state WHERE account_id = ?`
   )
     .bind(account.id)
     .first<{ updated_at: string }>();
-  if (!st) return true;
+  if (!st) return true; // 初回
   const ageDays = (Date.now() - parseSqlUtc(st.updated_at)) / 86400_000;
   return ageDays >= account.cycle_days;
 }
@@ -752,13 +747,17 @@ export async function cancelQueuedForAccount(env: Env, accountId: string): Promi
   return { deleted: (del as { meta?: { changes?: number } }).meta?.changes ?? 0 };
 }
 
-// N日分を即時生成（削除はしない・在庫に追加）。daysは1〜14でクランプ。
-export async function generateDaysForAccount(env: Env, accountId: string, days: number): Promise<{ generated: number; mode: "auto" | "manual" }> {
+// 手動「1日分を追加」：1回1日分だけ即時生成（在庫上限まで）。source=manual＝サイクル切替の作り直しで消えない。
+//   在庫が上限なら at_cap を返してUIでエラー表示。daysは無視（常に1日分）。
+export async function generateDaysForAccount(env: Env, accountId: string, _days?: number): Promise<{ generated: number; mode: "auto" | "manual"; at_cap?: boolean; cap?: number; have?: number }> {
   const acc = await loadAccount(env, accountId);
   if (!acc) return { generated: 0, mode: "manual" };
-  const d = Math.max(1, Math.min(3, Math.floor(days || 1))); // 1〜3日（多すぎ＝生成が長くなるため上限3）
-  const generated = await replenishForAccount(env, acc, d);
-  return { generated, mode: acc.approval_mode === "auto" ? "auto" : "manual" };
+  const mode = acc.approval_mode === "auto" ? "auto" : "manual";
+  const cap = inventoryCap(acc);
+  const have = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM posts WHERE account_id = ? AND status IN ('queued','pending')`).bind(accountId).first<{ n: number }>())?.n ?? 0;
+  if (have >= cap) return { generated: 0, mode, at_cap: true, cap, have };
+  const generated = await replenishForAccount(env, acc, 1, "manual"); // 1日分・上限まで
+  return { generated, mode, cap, have: have + generated };
 }
 
 export async function runCycle(
@@ -769,14 +768,25 @@ export async function runCycle(
   for (const acc of accounts) {
     if (!acc.platforms.includes("x")) continue;
     try {
-      if (!(await isCycleDue(env, acc))) continue;
-      const learned = await learnForAccount(env, acc);
-      await learnUrlAffinity(env, acc); // URL誘導はクリック/CVで学習（誘導スタイルの良し悪し）
-      await autoUnadoptLowScore(env, acc); // 設定ONなら低スコア型を自動不採用（微調整期・床10維持）
-      await updateExecNotes(env, acc); // 型別の実行ノート（微調整）を更新。新しい添削があった型だけ
-      const generated = await replenishForAccount(env, acc);
-      await stampCycle(env, acc.id, `learned=${learned} generated=${generated}`);
-      out.push({ account: acc.id, learned, generated });
+      if (await isCycleTurn(env, acc)) {
+        // ── サイクル切替：学習し直し → 古い傾向の“自動生成”予約を作り直し（厳密にサイクルを保持） ──
+        const learned = await learnForAccount(env, acc);
+        await learnUrlAffinity(env, acc); // URL誘導はクリック/CVで学習（誘導スタイルの良し悪し）
+        await autoUnadoptLowScore(env, acc); // 設定ONなら低スコア型を自動不採用（微調整期・床10維持）
+        await updateExecNotes(env, acc); // 型別の実行ノート（微調整）を更新。新しい添削があった型だけ
+        // 未投稿の“自動生成”予約(source=tool)だけ破棄。会員が編集/手動生成した分(source=manual)・承認待ち(pending)は残す。
+        await env.DB.prepare(`DELETE FROM posts WHERE account_id = ? AND status = 'queued' AND source = 'tool'`).bind(acc.id).run();
+        const generated = await replenishForAccount(env, acc); // 新しい学習で1日分（source=tool）
+        await stampCycle(env, acc.id, `cycle turn learned=${learned} regen=${generated}`);
+        out.push({ account: acc.id, learned, generated });
+      } else {
+        // ── サイクル途中：在庫が1日分を切ったら緊急補充のみ（学習・作り直し・スタンプはしない＝サイクル日数は進む） ──
+        const have = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM posts WHERE account_id = ? AND status IN ('queued','pending')`).bind(acc.id).first<{ n: number }>())?.n ?? 0;
+        if (have < acc.daily_frequency) {
+          const generated = await replenishForAccount(env, acc); // そのサイクルの学習のまま1日分（source=tool）
+          out.push({ account: acc.id, learned: false, generated });
+        }
+      }
     } catch (e) {
       console.error(`[${acc.id}] サイクル失敗: ${e instanceof Error ? e.message : e}`);
     }
