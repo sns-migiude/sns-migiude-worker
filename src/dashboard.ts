@@ -2359,7 +2359,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     });
   }
   // ランキング：3カテゴリ（型別/ポスト別/時間帯別）×全指標の並び替え自由テーブル。
-  var ANALYSIS=null; var RANK_CAT="type"; var RANK_SORT={col:"impressions",dir:-1};
+  var ANALYSIS=null; var RANK_CAT="type"; var RANK_SORT={col:"er_pct",dir:-1};
   var CATS=[{key:"type",label:"型別"},{key:"post",label:"ポスト別"},{key:"hour",label:"時間帯別"}];
   var RANK_COLS=[
     {key:"impressions",label:"インプ"},{key:"likes",label:"いいね"},{key:"reposts",label:"リポスト"},
@@ -2367,7 +2367,7 @@ export const DASHBOARD_HTML = `<!doctype html>
   ];
   function rankCatData(){ if(!ANALYSIS)return []; if(RANK_CAT==="post")return ANALYSIS.by_post||[]; if(RANK_CAT==="hour")return ANALYSIS.by_hour||[]; return ANALYSIS.by_type||[]; }
   function nameLabel(){ return RANK_CAT==="post"?"ポスト":RANK_CAT==="hour"?"時間":"型"; }
-  function nameOf(row){ return RANK_CAT==="post"?(esc(row.body)+xLink(row.pid)):RANK_CAT==="hour"?(row.hour+"時台"):esc(row.hook); }
+  function nameOf(row){ return RANK_CAT==="post"?(esc(row.body)+xLink(row.pid)):RANK_CAT==="hour"?(row.hour+"時台"):esc(row.hook_label||row.hook); }
   function sortVal(row,col){
     if(col==="__name"){ if(RANK_CAT==="hour")return row.hour; if(RANK_CAT==="post")return new Date(String(row.posted_at).replace(" ","T")+"Z").getTime(); return row.hook||""; }
     return (row[col]!=null)?row[col]:-1;

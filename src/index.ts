@@ -1787,13 +1787,25 @@ export default {
         score: Math.round(med(rs.map((r) => r.er_norm).filter((x): x is number => x != null)) * 100) / 100,
       });
 
+      // 型ラベルの英語パターンキー(##single_long 等)を日本語の補足に直す（UIに英語を出さない）。
+      const patShort = (key: string): string => {
+        const p = PATTERNS[key]; if (!p) return "";
+        if (p.url) return ""; // prefixが既にURL誘導を示すので付けない
+        return (p.kind === "thread" ? "連結" : "単発") + (p.long ? "・長文" : "・短文") + (p.image ? "・画像" : "");
+      };
+      const hookLabel = (h: string): string => {
+        const i = h.indexOf("##"); if (i < 0) return h;
+        const prefix = h.slice(0, i), s = patShort(h.slice(i + 2));
+        return s ? `${prefix}（${s}）` : prefix;
+      };
+
       // 型別
       const byTypeMap = new Map<string, Row[]>();
       for (const r of rows) {
         const k = r.hook || "(型なし)";
         (byTypeMap.get(k) ?? byTypeMap.set(k, []).get(k)!).push(r);
       }
-      const by_type = [...byTypeMap.entries()].map(([hook, rs]) => ({ hook, ...aggMetrics(rs) }));
+      const by_type = [...byTypeMap.entries()].map(([hook, rs]) => ({ hook, hook_label: hookLabel(hook), ...aggMetrics(rs) }));
 
       // 時間帯別（JST時）
       const byHourMap = new Map<number, Row[]>();
@@ -1827,7 +1839,7 @@ export default {
       // 型（n≥2・平常比プラス・URL以外）
       for (const t of by_type) {
         if (t.n >= 2 && t.score > 1.0 && t.hook && t.hook in TYPE_INSTRUCTIONS) {
-          cardCands.push({ benefit: t.score - 1, tone: "good", text: `「${t.hook}」が平常比+${pctOf(t.score)}%。多めに作ると効果的。`, focus: { dim: "hook", value: t.hook, label: `「${t.hook}」を多めに` } });
+          cardCands.push({ benefit: t.score - 1, tone: "good", text: `「${hookLabel(t.hook)}」が平常比+${pctOf(t.score)}%。多めに作ると効果的。`, focus: { dim: "hook", value: t.hook, label: `「${hookLabel(t.hook)}」を多めに` } });
         }
       }
       // 長さ（各3件以上）
@@ -1858,7 +1870,7 @@ export default {
       const typesByScore = [...by_type].filter((t) => t.n >= 2).sort((a, b) => b.score - a.score);
       if (typesByScore.length) {
         const worst = typesByScore[typesByScore.length - 1];
-        if (worst.score < 0.9) insights.push({ tone: "bad", text: `「${worst.hook}」は平常比${pctOf(worst.score)}%と低め。切り口を変えるのも手。` });
+        if (worst.score < 0.9) insights.push({ tone: "bad", text: `「${hookLabel(worst.hook)}」は平常比${pctOf(worst.score)}%と低め。切り口を変えるのも手。` });
       }
       if (rows.length < 10) insights.push({ tone: "tip", text: "まだデータが少なめ。各型10件ほどで提案の精度が上がります。" });
 
