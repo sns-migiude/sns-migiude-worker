@@ -66,7 +66,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.06";
+const CODE_VERSION = "1.07";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -2063,6 +2063,30 @@ export default {
       if (Array.isArray(b.examples) && b.examples.length) {
         userText += `\n\n# トレーニングで採用された投稿例（この型がこういう"構造"の投稿を生むよう、プロンプトを改善する。中身ではなく書き方の傾向を取り込む）\n${b.examples.slice(0, 12).join("\n---\n").slice(0, 6000)}`;
       }
+      // 学習データを踏まえる：発信の方向性／効いている切り口／過去投稿（＝アップロードしたデータ）。
+      // ※ voice-agnostic維持：文体・語尾はコピーしない。あくまで「この人にフィットする型か」の判断材料。
+      try {
+        const cr = await env.DB.prepare(
+          `SELECT key, content FROM corpus WHERE account_id = ? AND key IN ('direction','winning_patterns','voice_samples')`
+        ).bind(b.account).all<{ key: string; content: string }>().catch(() => ({ results: [] as Array<{ key: string; content: string }> }));
+        const cmap: Record<string, string> = {};
+        for (const r of cr.results ?? []) cmap[r.key] = r.content;
+        const hookRow = await env.DB.prepare(
+          `SELECT value_json AS v FROM individual_profile WHERE account_id = ? AND key = 'hook_affinity'`
+        ).bind(b.account).first<{ v: string }>().catch(() => null);
+        let learned = "";
+        if (cmap.direction?.trim()) learned += `\n\n# この人の発信の方向性（何を・誰に・どんなスタンスで）\n${cmap.direction.slice(0, 800)}`;
+        if (hookRow?.v) {
+          try {
+            const ha = JSON.parse(hookRow.v) as unknown[];
+            const names = Array.isArray(ha) ? ha.map((x) => (typeof x === "string" ? x : ((x as { hook?: string; name?: string })?.hook ?? (x as { name?: string })?.name ?? ""))).filter(Boolean) : [];
+            if (names.length) learned += `\n\n# この人に効いている切り口/型（成績上位・型の方向性の参考）\n${names.slice(0, 8).join(" / ")}`;
+          } catch { /* 形が違えば無視 */ }
+        }
+        if (cmap.winning_patterns?.trim()) learned += `\n\n# 効いている書き方の傾向\n${cmap.winning_patterns.slice(0, 600)}`;
+        if (cmap.voice_samples?.trim()) learned += `\n\n# この人の過去投稿（アップロード済み。扱うテーマ・話題・切り口の参考。文体や語尾はコピーしない＝型は構造だけ）\n${cmap.voice_samples.slice(0, 2000)}`;
+        if (learned) userText += learned + `\n\n# 使い方\n上の学習データは「この人に本当にフィットする型か・どの切り口が効くか」を見極める材料。型のプロンプトは voice-agnostic（構造・切り口・流れだけ／特定の文体や語尾は書かない）で出力する。`;
+      } catch { /* 学習データが取れなくても型ドラフトは続行 */ }
       try {
         const { text: out, usage } = await callClaude({
           apiKey: claudeKey, model: env.GEN_MODEL, effort: "medium", schema: TYPE_PROMPT_SCHEMA,
