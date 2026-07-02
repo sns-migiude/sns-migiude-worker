@@ -9,6 +9,7 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/sns-migiude/sns-migiude-worker)
 
+0. **先にCloudflareでR2を有効化**（ダッシュボードのR2 Object Storageで支払い方法を登録。無料枠内は0円。未有効だと次の画面で止まります）
 1. 上のボタン → Cloudflareにログイン（無料アカウントでOK）
 2. **Worker / D1 / R2 が自動で作られます**（あなたのアカウント上）
 3. 途中で**シークレット**を聞かれます：
@@ -25,7 +26,7 @@
 - 公開した投稿の反応だけが**匿名・構造化**されて集合知に還元される（本文・文体・鍵は送らない）
 
 ## 必要なもの
-- Cloudflareアカウント（無料）
+- Cloudflareアカウント（無料。ただし**R2の有効化にクレジットカード登録が必要**・無料枠内は0円）
 - Claude APIキー（従量・あなた負担）
 - X(Twitter)の開発者アカウント＋APIキー（あなた負担）
 - 招待コード（運営から）
