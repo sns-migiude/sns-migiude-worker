@@ -66,7 +66,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.08";
+const CODE_VERSION = "1.09";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -2404,7 +2404,7 @@ export default {
     }
     // 本部(HQ)と同期：全会員の型＋成績をpush → 効く型ライブラリをpull（手動トリガ／cronでも実行）。
     if (req.method === "POST" && url.pathname === "/api/hq/sync") {
-      const r = await syncHonbu(env);
+      const r = await syncHonbu(env, CODE_VERSION);
       return json({ ok: true, ...r });
     }
     // ローカルにキャッシュした「みんなに効く型」ライブラリ（型の開発のおすすめ用）。accを渡すと導入済みか印を付ける。
@@ -2960,7 +2960,7 @@ export default {
     // 本部との同期（生成とは独立・固定時刻）。push=最新の型/成績、pull=効く型ライブラリ＋お知らせ。
     if (hhmm === honbuSyncSlot) {
       try {
-        await syncHonbu(env);
+        await syncHonbu(env, CODE_VERSION);
       } catch (e) {
         console.error(`本部同期失敗: ${e instanceof Error ? e.message : e}`);
       }

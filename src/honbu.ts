@@ -176,7 +176,7 @@ async function gatherShareTypes(env: Env, acc: string): Promise<ShareType[]> {
 }
 
 // 1会員ぶんを本部へ送る。送れた型数を返す。authTok＝会員ごとトークン（無ければ共通HONBU_TOKEN）。email＝周知メール宛先。
-export async function pushAccount(env: Env, acc: string, label: string | null, authTok?: string, email?: string | null): Promise<number> {
+export async function pushAccount(env: Env, acc: string, label: string | null, authTok?: string, email?: string | null, codeVersion?: string | null): Promise<number> {
   if (!env.HONBU_URL) return 0;
   const tok = authTok || env.HONBU_TOKEN; // 会員ごとトークン優先。公開会員はこちら（HONBU_TOKEN無し）。
   if (!tok) return 0; // 認証手段なし（会員トークン未取得＋共有トークンなし）→送れない
@@ -185,7 +185,7 @@ export async function pushAccount(env: Env, acc: string, label: string | null, a
   const res = await fetch(`${env.HONBU_URL}/hq/ingest`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok}` },
-    body: JSON.stringify({ member_id: acc, label, email: email ?? undefined, types }),
+    body: JSON.stringify({ member_id: acc, label, email: email ?? undefined, code_version: codeVersion || null, types }),
   });
   if (!res.ok) throw new Error(`HQ ingest ${res.status}`);
   return types.length;
@@ -286,7 +286,7 @@ export async function pullBroadcasts(env: Env, authTok?: string): Promise<number
 }
 
 // 全会員を本部へpush → ライブラリ＆お知らせをpull。日次cronと手動エンドポイントから呼ぶ。
-export async function syncHonbu(env: Env): Promise<{ pushed_accounts: number; pushed_types: number; pushed_posts: number; library: number; broadcasts: number }> {
+export async function syncHonbu(env: Env, codeVersion?: string): Promise<{ pushed_accounts: number; pushed_types: number; pushed_posts: number; library: number; broadcasts: number }> {
   if (!env.HONBU_URL) return { pushed_accounts: 0, pushed_types: 0, pushed_posts: 0, library: 0, broadcasts: 0 };
   // この会員(=worker)の永続ユニークID。本部にはこのIDで登録・連携する（1 worker = 1 member）。
   const memberUid = await getMemberUid(env);
@@ -314,7 +314,7 @@ export async function syncHonbu(env: Env): Promise<{ pushed_accounts: number; pu
   for (const a of accounts) {
     try {
       // per-memberトークンがある場合、本部はトークンからmember_idを確定する（body.member_idは無視）。
-      const n = await pushAccount(env, a.id, a.handle ?? label, authTok, memberEmail);
+      const n = await pushAccount(env, a.id, a.handle ?? label, authTok, memberEmail, codeVersion);
       if (n > 0) {
         pushedAccounts++;
         pushedTypes += n;
