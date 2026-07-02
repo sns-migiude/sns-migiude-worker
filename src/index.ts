@@ -66,7 +66,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.09";
+const CODE_VERSION = "1.10";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -265,6 +265,13 @@ async function postNext(
     console.log(`[${account.id}] POST_ENABLED=0 のため投稿スキップ post#${next.id}`);
     return { posted: false, detail: "posting_disabled" };
   }
+
+  // 二重投稿防止：この投稿を原子的に予約（queued→posting）。手動 /api/post-now と毎分cron が
+  // 同時に走っても、予約を取れた1プロセスだけが投稿する。取れなければ他が処理中なのでスキップ。
+  const claim = await env.DB.prepare(
+    `UPDATE posts SET status = 'posting' WHERE id = ? AND status = 'queued'`
+  ).bind(next.id).run();
+  if ((claim.meta.changes ?? 0) === 0) return { posted: false, detail: "already_claimed" };
 
   try {
     // 画像カード：テーマONなら本文をカード画像にして添付。URL誘導(link_code)はOGP任せでカード無し。
