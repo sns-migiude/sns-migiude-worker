@@ -31,7 +31,6 @@
     "METRICS_WINDOW_DAYS": "14",
     "GEN_MODEL": "claude-sonnet-5",
     "CYCLE_START_JST": "06:00",
-    "ENV_LABEL": "",
     "POST_ENABLED": "1",
     // 本部(HQ)の本番URL＝独自ドメイン。登録は招待コード認証なので共有トークンは不要。
     "HONBU_URL": "https://hq.sns-migiude.com"
