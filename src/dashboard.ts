@@ -3147,7 +3147,7 @@ export const DASHBOARD_HTML = `<!doctype html>
       if ($("failedWrap")) $("failedWrap").style.display = fa.length?"block":"none";
       if ($("failed")) $("failed").innerHTML = fa.map(function(p){
         schedBodies[p.id]=p.body||""; schedReplies[p.id]=p.reply_text||"";
-        return "<div class='card' id='nac"+p.id+"' style='border-left:3px solid #c0392b'>"+threadView(p)+"<div class='note' style='color:#c0392b;margin-top:6px'>エラー："+esc(p.error||"投稿に失敗しました")+"</div><div class='row' style='gap:8px;margin-top:8px'><button class='accent' onclick='editPromote("+p.id+")'>✏️ 直して再予約</button><button class='soft' onclick='delScheduled("+p.id+")'>削除</button></div></div>";
+        return "<div class='card' id='nac"+p.id+"' style='border-left:3px solid #c0392b'>"+threadView(p)+"<div class='note' style='color:#c0392b;margin-top:6px'>エラー："+esc(p.error||"投稿に失敗しました")+"</div><div class='row' style='gap:8px;margin-top:8px'><button class='primary' onclick='requeueFailed("+p.id+")'>🔁 そのまま再予約</button><button class='accent' onclick='editPromote("+p.id+")'>✏️ 直して再予約</button><button class='soft' onclick='delScheduled("+p.id+")'>削除</button></div></div>";
       }).join("");
       var na=(r.body&&r.body.not_adopted)||[];
       if ($("notAdopted")) $("notAdopted").innerHTML = na.length ? na.map(function(p){
@@ -3187,6 +3187,14 @@ export const DASHBOARD_HTML = `<!doctype html>
     });
   }
   function movePost(id,dir){ api("POST","/api/posts/"+id+"/move",{dir:dir}).then(function(){ loadScheduled(); }); }
+  // 投稿失敗を本文そのままで再予約（1クリック）。クレジット切れ等の外部要因で失敗したポストの復帰用。
+  function requeueFailed(id){
+    msg("再予約しています…");
+    api("POST","/api/posts/"+id+"/requeue",{}).then(function(r){
+      if(r.body&&r.body.ok){ msg("再予約しました。次の投稿時間に出ます。"); loadScheduled(); }
+      else { msg((r.body&&r.body.error)||"再予約できませんでした。",false); }
+    });
+  }
   function editPromote(id){
     var card=$("nac"+id); if(!card) return;
     var body=schedBodies[id]||""; var reply=schedReplies[id]||"";

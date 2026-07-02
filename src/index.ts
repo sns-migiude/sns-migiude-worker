@@ -66,7 +66,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.11";
+const CODE_VERSION = "1.12";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -905,6 +905,27 @@ export default {
       return json({ approved: pid, scheduled_at: slot });
     }
     // 手直しして投稿（添削）：本文を編集→承認。添削後の本文を学習データ(voice_samples)に積む。
+    // 投稿失敗(failed)を本文そのままで再予約（1クリック復帰）。
+    //   クレジット切れ等の外部要因で失敗したポスト用。一度承認済みの本文なので添削は要求しない。
+    //   学習には一切書き込まない。retry_countを0に戻す（残したままだと次の失敗1回で即failedに戻るため）。
+    const requeueMatch = url.pathname.match(/^\/api\/posts\/(\d+)\/requeue$/);
+    if (req.method === "POST" && requeueMatch) {
+      const id = Number(requeueMatch[1]);
+      const post = await env.DB.prepare(
+        `SELECT account_id FROM posts WHERE id = ? AND status = 'failed'`
+      ).bind(id).first<{ account_id: string }>();
+      if (!post) return json({ error: "該当する失敗ポストがありません" }, 404);
+      // 在庫上限を尊重（failed→queuedは在庫が増えるため。edit-approveと同じ基準）。
+      const ac = await env.DB.prepare(`SELECT daily_frequency, cycle_days FROM accounts WHERE id = ?`).bind(post.account_id).first<{ daily_frequency: number; cycle_days: number }>();
+      const cap = inventoryCap({ daily_frequency: ac?.daily_frequency ?? 3, cycle_days: ac?.cycle_days ?? 5 });
+      const have = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM posts WHERE account_id = ? AND status IN ('queued','pending')`).bind(post.account_id).first<{ n: number }>())?.n ?? 0;
+      if (have >= cap) return json({ ok: false, at_cap: true, error: `予約の在庫が上限（${cap}本）です。先に予約を消化してから再予約してください。` }, 200);
+      const slot = await nextQueueSlot(env, post.account_id);
+      await env.DB.prepare(
+        `UPDATE posts SET status = 'queued', not_before = ?, retry_count = 0, error = NULL WHERE id = ? AND status = 'failed'`
+      ).bind(slot, id).run();
+      return json({ ok: true, not_before: slot });
+    }
     const editMatch = url.pathname.match(/^\/api\/posts\/(\d+)\/edit-approve$/);
     if (req.method === "POST" && editMatch) {
       const b = (await req.json().catch(() => null)) as {
@@ -944,7 +965,8 @@ export default {
       const replyChanged = replyProvided && (post.reply_text ?? "") !== (newReply ?? "");
       // 未変更のまま「完成」はNG：AI文がvoice_samplesに混ざる（捏造防止）。手直しを促す。
       // ※2本目だけ直した場合は通す（=replyChanged）。as-is投稿は本編の「これで投稿」(/approve)が担当。
-      if (!bodyChanged && !replyChanged) {
+      // ※投稿失敗(failed)は一度承認を通った本文＝そのまま再予約してよい（学習への書き込みはbodyChanged時のみで変わらず安全）。
+      if (!bodyChanged && !replyChanged && post.status !== "failed") {
         return json({ ok: false, unchanged: true, error: "少し手直ししてみましょう（直した文章がそのまま学習になります）" });
       }
       const editSlot = await nextQueueSlot(env, post.account_id); // 次の投稿スロットを予約
