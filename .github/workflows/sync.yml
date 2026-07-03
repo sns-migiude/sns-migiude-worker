@@ -1,6 +1,3 @@
-# 上流（sns-migiude/sns-migiude-worker の main＝安定版）を自分のフォークに毎日取り込む自動同期。
-# これがONだと、運営がアップデートを出すと自動でフォークが更新され、Cloudflareが自動再デプロイします。
-# ※GitHubはfork上のActionを既定で無効化します。フォーク後に一度だけ「Enable workflows」を押してください。
 name: Sync with upstream
 on:
   schedule:
@@ -15,16 +12,22 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Mirror upstream main
+      - name: Mirror upstream main (keep own workflows)
         run: |
           git config user.name "sns-migiude-sync"
           git config user.email "sync@users.noreply.github.com"
           git remote add upstream https://github.com/sns-migiude/sns-migiude-worker.git
           git fetch upstream main
           git checkout main
+          KEEP=$(git rev-parse HEAD)
           git reset --hard upstream/main
+          # GITHUB_TOKENはワークフローファイルを変更できないため、自分の .github/workflows を維持したまま同期する
+          git rm -r -q --ignore-unmatch .github/workflows
+          git checkout "$KEEP" -- .github/workflows
+          git add -A
+          git commit -m "sync: mirror upstream (keep own workflows)" || true
           git push origin main --force
