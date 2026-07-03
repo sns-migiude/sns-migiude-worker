@@ -45,12 +45,32 @@ export async function registerWithHonbu(
       headers,
       body: JSON.stringify({ member_id: memberId, label, email, invite_code: inviteCode, worker_url: workerUrl || null }),
     });
-    const d = (await res.json().catch(() => ({}))) as { ok?: boolean; token?: string; error?: string };
-    if (res.ok && d.token) { await setConfig(env, "honbu_token", d.token); return { ok: true }; }
+    const d = (await res.json().catch(() => ({}))) as { ok?: boolean; token?: string; error?: string; email?: string };
+    if (res.ok && d.token) {
+      await setConfig(env, "honbu_token", d.token);
+      // 本部が解決した会員メール（claim時のsignupsから引き継ぎ）を保存。連携画面のメール入力欄は無い（1.17）。
+      if (d.email && !(await getConfig(env, "member_email"))) await setConfig(env, "member_email", d.email);
+      return { ok: true };
+    }
     if (res.status === 409) return { ok: true, error: "already_registered" }; // 既登録＝OK扱い
     return { ok: false, error: d.error || `http_${res.status}` };
   } catch {
     return { ok: false, error: "unreachable" };
+  }
+}
+
+// 本部から自分の登録メールを取得（/hq/me）。member_email未保存の会員の引き継ぎ用（1.17）。
+export async function fetchHonbuEmail(env: Env): Promise<string | null> {
+  if (!env.HONBU_URL) return null;
+  const tok = await getConfig(env, "honbu_token");
+  if (!tok) return null;
+  try {
+    const res = await fetch(`${env.HONBU_URL}/hq/me`, { headers: { Authorization: `Bearer ${tok}` } });
+    if (!res.ok) return null;
+    const d = (await res.json().catch(() => ({}))) as { ok?: boolean; email?: string | null };
+    return d.email || null;
+  } catch {
+    return null;
   }
 }
 

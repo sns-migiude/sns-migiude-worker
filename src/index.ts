@@ -34,7 +34,7 @@ export { UsRelay } from "./us-relay";
 import { HELP_SPEC, HELP_RULES } from "./help";
 import { generateDrafts } from "./generate";
 import { logClaudeUsage } from "./usage";
-import { syncHonbu, pullFromHonbu, registerWithHonbu, listMyInvites, ensureHonbuToken } from "./honbu";
+import { syncHonbu, pullFromHonbu, registerWithHonbu, listMyInvites, ensureHonbuToken, fetchHonbuEmail } from "./honbu";
 import { getPromptPack, refreshPrompts, hydrateFromCache } from "./prompts";
 import { TYPE_INSTRUCTIONS, CATALOG, CATALOG_KEYS, DEFAULT_ON, DEFAULT_ON_FREE, isLongType, PATTERNS, metaOf, URL_TYPE_INSTRUCTION, URL_STYLES, resolveImageType } from "./taxonomy";
 
@@ -67,7 +67,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.16";
+const CODE_VERSION = "1.17";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -2517,8 +2517,9 @@ export default {
       if (!b.claudeKey || !b.claudeKey.trim()) {
         return json({ error: "Claude APIキーが必要です（AIの文章生成に使います）" }, 400);
       }
-      // メール（オンボーディングで必須）。連絡/周知メール宛先＋将来ログイン土台。
-      //   既に登録済みなら未指定でも可（設定からの再連携を妨げない）。指定があれば形式検証して更新。
+      // メール：連携画面に入力欄は無い（1.17）。ゲート通過時に本部から引き継ぐのが基本経路で、
+      //   未保存なら本部/hq/meから取得を試す。それでも無ければ連携は止めない（周知メールは本部が
+      //   members.email宛に送る＝本部側にあれば会員に届く。ローカルは設定画面の表示用）。
       const existingEmail = await getConfig(env, "member_email");
       const emailIn = String(b.email ?? "").trim();
       if (emailIn) {
@@ -2527,7 +2528,8 @@ export default {
         }
         await setConfig(env, "member_email", emailIn);
       } else if (!existingEmail) {
-        return json({ error: "メールアドレスを入力してください（連絡・お知らせに使います）。" }, 400);
+        const hqEmail = await fetchHonbuEmail(env);
+        if (hqEmail) await setConfig(env, "member_email", hqEmail);
       }
       const xc: XCreds = {
         apiKey: x.apiKey.trim(),
