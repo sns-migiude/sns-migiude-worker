@@ -16,14 +16,12 @@
 
   // D1（個人データ）。database_id は付けない＝Deployボタンが会員アカウントに新規作成。
   "d1_databases": [
-    { "binding": "DB", "database_name": "sns-migiude" }
+    { "binding": "DB", "database_name": "sns-migiude", "migrations_dir": "migrations" }
   ],
   // 画像カードのレンダ素材（resvg wasm/フォント/背景/ロゴ）。同上で自動作成。
   "r2_buckets": [
     { "binding": "MEDIA", "bucket_name": "sns-migiude-media" }
   ],
-  // D1マイグレーション（デプロイ時に適用）。migrations/0001_init.sql を含める。
-  "migrations_dir": "migrations",
 
   "vars": {
     "POST_SLOTS_JST": "06:30,11:30,17:00,21:00",
