@@ -1118,12 +1118,27 @@ export const DASHBOARD_HTML = `<!doctype html>
     var freq = s.daily_frequency || 3, days = s.cycle_days || 5, mode = s.approval_mode || "queue";
     var learnedN = (tLearned!=null && tLearned>0) ? tLearned : (s.voice_posts||0);
     var vnote;
-    if (learnedN>0){ vnote = "過去の投稿 "+learnedN+"件から、あなたの言葉づかいを学びました。"; }
+    if (learnedN>=20){ vnote = "過去の投稿 "+learnedN+"件から、あなたの言葉づかいを学びました。"; }
+    else if (learnedN>0){ vnote = "過去の投稿は "+learnedN+"件でした（学習素材としては少なめです）。"; }
     else if (s.has_voice){ vnote = "過去の投稿から、あなたの言葉づかいを学びました。"; }
-    else { vnote = "過去の投稿が少なく、文体サンプルはまだ少なめです。書きながら学んでいきます。"; }
+    else { vnote = "過去の投稿が見つかりませんでした（0件）。"; }
     var h = "";
     h += "<h2>連携できました 🌱</h2>";
     h += "<p class='lead'>@"+esc(s.handle||"")+" ・ "+vnote+"</p>";
+    // 過去ポストが少ない（20件未満）＝文体の学習材料が足りない人への入念な注意。
+    // 添削ループ（voice_edits）だけが文体の教科書になるため、最初の添削の質がその後の全生成を決める。
+    var thin = (learnedN < 20) && !(learnedN === 0 && s.has_voice);
+    if (thin){
+      h += "<div class='card' style='border:1.5px solid var(--danger);margin-bottom:12px'>";
+      h += "<div style='font-weight:600;margin-bottom:8px'>⚠️ 大事なお願い：最初の添削が、あなたの文体の教科書になります</div>";
+      h += "<div class='note' style='line-height:1.9;color:var(--text)'>";
+      h += "過去の投稿が少ないため、いまのAIは<b>あなたの文体をほとんど知りません</b>。";
+      h += "そのぶん、<b>あなたが下書きを直した内容が、そのまま文体の教科書</b>になります。<br>";
+      h += "・<b>最初の10本は、星評価ではなく、なるべく添削</b>をしてください。<br>";
+      h += "・直すほど、AIはあなたらしくなります。<b>直さずに承認し続けると、AIっぽい文章のまま固まってしまいます</b>。<br>";
+      h += "・投稿が増えてくれば、実際のポストからも自動で学び直していきます。";
+      h += "</div></div>";
+    }
     h += "<div class='card'>";
     h += "<div style='font-weight:500;margin-bottom:12px'>配信と学習のペースを決めましょう（あとで変えられます）</div>";
     h += "<label>1日の投稿本数</label><select id='tfreq'>"+selOpts([1,2,3,4,5],freq,"本")+"</select>";
