@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "wrangler dev",
     "check": "tsc --noEmit",
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
     "tail": "wrangler tail",
-    "db:init": "wrangler d1 execute sns-migiude --remote --file=migrations/0001_init.sql"
+    "db:init": "wrangler d1 migrations apply DB --remote"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260601.0",
