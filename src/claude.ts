@@ -36,6 +36,25 @@ export function extractJson<T = unknown>(text: string): T {
   }
 }
 
+// ── 地域ブロック回避の中継（us-relay.ts参照）─────────────────────
+// 無料プランのWorkerがHKG（香港）で実行されるとAnthropicに地域ブロックされるため、
+// US_RELAYバインディングがあれば米国配置DO経由でfetchする。無い環境では従来どおり直接。
+let relayNs: DurableObjectNamespace | null = null;
+export function setClaudeRelay(ns: DurableObjectNamespace | undefined | null): void {
+  relayNs = ns ?? null;
+}
+function anthropicFetch(url: string, init: RequestInit): Promise<Response> {
+  if (relayNs) {
+    try {
+      const stub = relayNs.get(relayNs.idFromName("us"), { locationHint: "enam" });
+      return stub.fetch(url, init);
+    } catch {
+      // 中継が使えない環境（ローカル等）では直接fetchにフォールバック
+    }
+  }
+  return fetch(url, init);
+}
+
 export class ClaudeError extends Error {
   constructor(
     public status: number,
@@ -60,7 +79,7 @@ interface ClaudeResponse {
 export async function verifyClaudeKey(apiKey: string): Promise<{ ok: boolean; error?: string }> {
   if (!apiKey || !apiKey.trim()) return { ok: false, error: "Claude APIキーが空です" };
   try {
-    const res = await fetch("https://api.anthropic.com/v1/models?limit=1", {
+    const res = await anthropicFetch("https://api.anthropic.com/v1/models?limit=1", {
       headers: { "x-api-key": apiKey.trim(), "anthropic-version": "2023-06-01" },
     });
     if (res.ok) return { ok: true };
@@ -105,7 +124,7 @@ export async function callClaude(opts: ClaudeOpts): Promise<{
   }
   if (opts.stream) body.stream = true;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const res = await anthropicFetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

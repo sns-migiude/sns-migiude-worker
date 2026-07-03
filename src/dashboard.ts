@@ -154,8 +154,8 @@ export const DASHBOARD_HTML = `<!doctype html>
 {{ENV_BANNER}}
 <div id="login" class="login card">
   <div class="brand" style="padding-left:0"><i class="ti ti-plant-2"></i> SNSの右腕</div>
-  <p class="lead">あなたの合言葉でログインしてください。合言葉はこの端末だけに保存され、外には出ません。</p>
-  <input id="tok" type="password" placeholder="あなたの合言葉" onkeydown="if(event.key==='Enter')saveToken()">
+  <p class="lead">合言葉＝<b>セットアップのときに「LOGIN_PASSWORD」として入力した文字列</b>です。この端末だけに保存され、外には出ません。</p>
+  <input id="tok" type="password" placeholder="合言葉（LOGIN_PASSWORD）" onkeydown="if(event.key==='Enter')saveToken()">
   <div class="row" style="margin-top:12px"><button class="primary" onclick="saveToken()">はじめる</button></div>
   <p id="loginErr" style="color:var(--danger);font-size:13px;margin:8px 0 0"></p>
   <details style="margin-top:16px;font-size:13px;color:#6b7280">
@@ -992,9 +992,10 @@ export const DASHBOARD_HTML = `<!doctype html>
     h+="<div class='card'><label style='display:block;font-weight:600'>招待コード</label>";
     h+="<input id='gInvite' placeholder='例: SNS-AB12-CD34' style='width:100%;margin-top:6px;text-transform:uppercase'>";
     h+="<div class='note' style='margin-top:4px'>メールで受け取った招待コードを入れてください。</div>";
-    // 招待コード無しでインストールした人の受け皿（公開リポから直接デプロイしたケース）。運営の招待リンクへ誘導する。
-    h+="<div class='note' style='margin-top:10px;border-top:1px solid var(--border);padding-top:10px'><b>招待コードをお持ちでない方へ</b><br>SNSの右腕は<b>完全招待制</b>です。コードが無いとこの先には進めませんが、インストール済みのこの環境はそのまま使えます。下の<b>招待リンク</b>からお名前とメールを登録すると、<b>あなた専用の招待コードがメールで届きます</b>。届いたらこの画面に戻って入力すれば始められます。<br>";
-    h+="<a href='https://join.sns-migiude.com/?code=SNS-6N7R-CJT4' target='_blank' rel='noopener' style='display:inline-block;margin-top:8px;font-weight:600;text-decoration:underline;word-break:break-all'>https://join.sns-migiude.com/?code=SNS-6N7R-CJT4</a></div></div>";
+    // 招待コード無しでインストールした人の受け皿（公開リポから直接デプロイしたケース）。
+    // ※コード付きの紹介URLはここに表示しない（コードを直接入力されるとメール登録＝メール実在確認をバイパスできてしまうため）。
+    h+="<div class='note' style='margin-top:10px;border-top:1px solid var(--border);padding-top:10px'><b>招待コードをお持ちでない方へ</b><br>SNSの右腕は<b>完全招待制</b>です。コードが無いとこの先には進めませんが、インストール済みのこの環境はそのまま使えます。すでに使っている知り合い（紹介者）から<b>紹介リンク</b>を受け取り、そこでお名前とメールを登録すると、<b>あなた専用の招待コードがメールで届きます</b>。届いたらこの画面に戻って入力すれば始められます。<br>";
+    h+="<a href='https://join.sns-migiude.com' target='_blank' rel='noopener' style='display:inline-block;margin-top:8px;text-decoration:underline'>詳しくは募集ページへ →</a></div></div>";
     h+="<div class='card'><div style='font-weight:600;margin-bottom:6px'>利用のお約束（要点）</div>";
     h+="<div class='note' style='line-height:1.95;max-height:240px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:10px'>";
     h+="・<b>あなたのAPIキー（X / Claude）はあなたのもの</b>です。運営は預かりません（あなたのCloudflareに暗号保管）。<br>";
@@ -1053,13 +1054,8 @@ export const DASHBOARD_HTML = `<!doctype html>
     h += "・<b>合計：月 およそ800〜2,000円</b>（投稿や分析の頻度を下げればもっと安く）<br><br>";
     h += "<b>初回だけ</b>：連携時に過去の投稿（最大100件）を読んで文体を学習 → <b>一度だけ 約80円まで</b>。投稿が100件より少ない人は<b>もっと安く</b>（実際に読んだ件数ぶんだけ）。次回以降はかかりません。";
     h += "</div></details>";
-    // ── メールアドレス（必須・連絡/お知らせ用） ──
-    h += "<div style='border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:12px;margin-bottom:12px'>";
-    h += "<div style='font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px'><i class='ti ti-mail'></i> メールアドレス（必須）</div>";
-    h += "<div class='note' style='margin-bottom:6px'>大事なお知らせ・連絡に使います（本部からのお知らせメールの宛先）。</div>";
-    h += "<input id='tem' type='email' placeholder='you@example.com'>";
-    h += "<div id='tEerr' class='note' style='color:var(--danger);margin-top:8px'></div>";
-    h += "</div>";
+    // メール入力欄は廃止（2026-07-03）：招待コード発行時のメールが本部に紐づく＝二重入力は不要。
+    // 宛先を変えたい場合は設定画面のメール欄から（/api/account/email）。
     // ── X API エリア ──
     h += "<div style='border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:12px;margin-bottom:12px'>";
     h += "<div style='font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px'><i class='ti ti-brand-x'></i> X API（4つの鍵・投稿と分析に使用）</div>";
@@ -1086,17 +1082,14 @@ export const DASHBOARD_HTML = `<!doctype html>
     if (pref.claudeKey) $("tck").value = pref.claudeKey;
   }
   function tConnect(){
-    var em=$("tem")?$("tem").value.trim():"";
-    if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(em)){ if($("tEerr"))$("tEerr").textContent="✗ メールアドレスを正しい形式で入れてください"; tmsg("メールアドレスを入れてください。",false); return; }
-    if($("tEerr"))$("tEerr").textContent="";
     var x = { apiKey:$("tx1").value.trim(), apiSecret:$("tx2").value.trim(), accessToken:$("tx3").value.trim(), accessSecret:$("tx4").value.trim() };
     if (!x.apiKey||!x.apiSecret||!x.accessToken||!x.accessSecret){ tmsg("4つの鍵をすべて入れてください。",false); return; }
     var ck=$("tck").value.trim();
     if (!ck){ tmsg("Claude APIキーを入れてください。",false); return; }
-    var pref = { email:em, apiKey:x.apiKey, apiSecret:x.apiSecret, accessToken:x.accessToken, accessSecret:x.accessSecret, claudeKey:ck };
+    var pref = { apiKey:x.apiKey, apiSecret:x.apiSecret, accessToken:x.accessToken, accessSecret:x.accessSecret, claudeKey:ck };
     tmsg("");
     tLearningView();
-    api("POST","/api/account/connect",{ account:ACC, x:x, claudeKey:ck, email:em }).then(function(r){
+    api("POST","/api/account/connect",{ account:ACC, x:x, claudeKey:ck }).then(function(r){
       var d=r.body||{};
       if (d.connected){ tLearned = (d.learned!=null?d.learned:null); tmsg(""); refreshTutorial(); return; }
       // 失敗：フォームに戻し、X / Claude のどちらで失敗したかを各エリアに表示。
@@ -2886,8 +2879,16 @@ export const DASHBOARD_HTML = `<!doctype html>
   function setMode(){
     var on=$("modeToggle")?$("modeToggle").checked:false;
     var mode=on?"auto":"queue";
+    if(on){ msg("自動承認モードに切り替えています…（承認待ちの整理と新しい予約の生成に1〜3分かかることがあります。このまま待ってください）"); }
+    var tg=$("modeToggle"); if(tg) tg.disabled=true;
     api("POST","/api/account/update",{ account:ACC, approval_mode:mode }).then(function(r){
-      if (r.body&&r.body.ok){ msg(on?"自動承認モードに切り替えました。":"手動承認モードに切り替えました。"); loadMode(); }
+      if(tg) tg.disabled=false;
+      if (r.body&&r.body.ok){
+        var extra="";
+        if(on && (r.body.pending_cleared||0)>0){ extra=" 承認待ち"+r.body.pending_cleared+"件を整理し、"+(r.body.generated||0)+"件を新しく予約しました（承認待ちは自動モードでは使われないため）。"; }
+        else if(on && (r.body.generated||0)>0){ extra=" "+r.body.generated+"件を新しく予約しました。"; }
+        msg((on?"自動承認モードに切り替えました。":"手動承認モードに切り替えました。")+extra); loadMode();
+      }
       else { msg((r.body&&r.body.error)||"切り替えできませんでした。",false); loadMode(); } // loadModeが実状態に戻す
     });
   }

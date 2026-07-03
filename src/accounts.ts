@@ -28,6 +28,7 @@ export interface Env {
   HONBU_TOKEN?: string; // 本部との連携トークン（INGEST_TOKEN）。本部側と共有
   PUBLIC_URL?: string; // この会員workerの公開URL（計測リンク /r の組み立てに使う）
   MEDIA?: R2Bucket; // 画像・カードのレンダ素材（resvg wasm/フォント/背景/ロゴ）の保存先
+  US_RELAY?: DurableObjectNamespace; // Claude API中継DO（米国配置・地域ブロック回避。us-relay.ts）
   FONT_BASE_URL?: string; // カード用フォントの取得元(公開リポraw)。R2未投入の新規会員が初回カード時に自動取得する。
 }
 

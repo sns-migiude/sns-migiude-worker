@@ -534,14 +534,20 @@ async function genOmakase(env: Env, account: Account, count: number, guide: stri
 export function inventoryCap(account: { daily_frequency: number; cycle_days: number }): number {
   return Math.max(account.daily_frequency * account.cycle_days, account.daily_frequency * 2);
 }
+// 在庫カウント用のSQL。自動投稿(auto)は queued のみを在庫と数える：
+//   承認待ち(pending)は自動モードでは誰にも承認されず、在庫上限を塞いで補充を飢餓させるため（2026-07-03の実バグ）。
+//   手動(queue)モードは pending が本命の在庫なので従来どおり両方数える。
+function stockCountSql(approvalMode: string): string {
+  return approvalMode === "auto"
+    ? `SELECT COUNT(*) AS n FROM posts WHERE account_id = ? AND status = 'queued'`
+    : `SELECT COUNT(*) AS n FROM posts WHERE account_id = ? AND status IN ('queued','pending')`;
+}
 // dayspan>0＝手動「1日分追加」（在庫上限まで・1日分）。dayspan=0＝通常サイクル（在庫上限まで・1日分）。
 // src＝挿入する source。'tool'＝自動生成（サイクル切替で作り直し対象）。'manual'＝手動生成（会員操作＝作り直しで消さない）。
 async function replenishForAccount(env: Env, account: Account, dayspan = 0, src: "tool" | "manual" = "tool"): Promise<number> {
   const perDay = Math.max(account.daily_frequency, 1);
   const target = inventoryCap(account);
-  const q = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM posts WHERE account_id = ? AND status IN ('queued','pending')`
-  )
+  const q = await env.DB.prepare(stockCountSql(account.approval_mode))
     .bind(account.id)
     .first<{ n: number }>();
   const have = q?.n ?? 0;
@@ -630,6 +636,7 @@ async function replenishForAccount(env: Env, account: Account, dayspan = 0, src:
   const seedHooks = seedRows.results.map((r) => r.hook ?? "").reverse(); // 古い順
   const ordered = interleaveByHook(drafts, seedHooks);
 
+  console.log(`[replenish] mode=${status} need=${need} 下書き=${drafts.length}件（url枠=${urlToMake}）`);
   let inserted = 0;
   for (const d of ordered) {
     // 自動投稿(queued)は基本配信時間＋ゆらぎで予約。手動(pending)は承認時に予約。
@@ -754,7 +761,7 @@ export async function generateDaysForAccount(env: Env, accountId: string, _days?
   if (!acc) return { generated: 0, mode: "manual" };
   const mode = acc.approval_mode === "auto" ? "auto" : "manual";
   const cap = inventoryCap(acc);
-  const have = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM posts WHERE account_id = ? AND status IN ('queued','pending')`).bind(accountId).first<{ n: number }>())?.n ?? 0;
+  const have = (await env.DB.prepare(stockCountSql(acc.approval_mode)).bind(accountId).first<{ n: number }>())?.n ?? 0;
   if (have >= cap) return { generated: 0, mode, at_cap: true, cap, have };
   const generated = await replenishForAccount(env, acc, 1, "manual"); // 1日分・上限まで
   return { generated, mode, cap, have: have + generated };
@@ -789,7 +796,7 @@ export async function runCycleForAccount(env: Env, acc: Account): Promise<{ lear
       return { learned, generated };
     }
     // ── サイクル途中：在庫が1日分を切ったら緊急補充のみ（学習・作り直し・スタンプはしない＝サイクル日数は進む） ──
-    const have = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM posts WHERE account_id = ? AND status IN ('queued','pending')`).bind(acc.id).first<{ n: number }>())?.n ?? 0;
+    const have = (await env.DB.prepare(stockCountSql(acc.approval_mode)).bind(acc.id).first<{ n: number }>())?.n ?? 0;
     if (have < acc.daily_frequency) {
       const generated = await replenishForAccount(env, acc); // そのサイクルの学習のまま1日分（source=tool）
       return { learned: false, generated };

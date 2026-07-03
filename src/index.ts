@@ -29,7 +29,8 @@ import {
   type AccountCreds,
   type Env,
 } from "./accounts";
-import { callClaude, verifyClaudeKey } from "./claude";
+import { callClaude, verifyClaudeKey, setClaudeRelay } from "./claude";
+export { UsRelay } from "./us-relay";
 import { HELP_SPEC, HELP_RULES } from "./help";
 import { generateDrafts } from "./generate";
 import { logClaudeUsage } from "./usage";
@@ -66,7 +67,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.15";
+const CODE_VERSION = "1.16";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -554,6 +555,7 @@ async function handleTestPost(req: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
+    setClaudeRelay(env.US_RELAY); // Claude呼び出しを米国配置DO経由に（HKG実行時の地域ブロック回避）
     const url = new URL(req.url);
     await rememberPublicUrl(env, url.origin); // 会員ごとの公開URLをリクエストから記憶（計測リンク/r・cronでも使う）
     await hydrateFromCache(env); // 型指示・URL（運営資産）をキャッシュから反映（metaOfの表示・生成前提。Hubは叩かない）
@@ -563,7 +565,7 @@ export default {
       const label = env.ENV_LABEL ?? "";
       // devのときだけ本番環境へのリンクを併記（本番は label="" なので非表示）。
       const banner = label
-        ? `<div class="envbar">SNSの右腕（${label}）　<a href="#" target="_blank" rel="noopener" style="color:#4a3206;text-decoration:underline;font-weight:600">→ 本番環境を開く</a></div>`
+        ? `<div class="envbar">SNSの右腕（${label}）　<a href="https://sns-migiude.dw-e56.workers.dev" target="_blank" rel="noopener" style="color:#4a3206;text-decoration:underline;font-weight:600">→ 本番環境を開く</a></div>`
         : "";
       const html = DASHBOARD_HTML.replace("{{ENV_BANNER}}", banner).split("{{ENV_LABEL}}").join(label);
       // no-cache：デプロイ後に古いダッシュボードJSが残らないよう、毎回サーバへ再検証させる。
@@ -1112,7 +1114,21 @@ export default {
           b.account
         )
         .run();
-      return json({ ok: true });
+      // 自動投稿モードで保存されたら、承認待ち(pending)を整理して即補充する。
+      //   手動→自動の切替後、誰にも承認されないpendingが在庫上限を塞ぎ自動補充が飢餓するため。
+      //   pendingはAIの未承認下書き＝消しても学習は失われない（いつでも作り直せる）。
+      let pendingCleared = 0;
+      let generatedNow = 0;
+      if (mode === "auto") {
+        const del = await env.DB.prepare(`DELETE FROM posts WHERE account_id = ? AND status = 'pending'`)
+          .bind(b.account).run().catch(() => null);
+        pendingCleared = del?.meta?.changes ?? 0;
+        try {
+          const g = await generateDaysForAccount(env, b.account); // 1日分を即時生成（在庫上限まで）
+          generatedNow = g.generated;
+        } catch (ge) { console.error(`[mode-save] 補充失敗: ${ge instanceof Error ? ge.message : ge}`); }
+      }
+      return json({ ok: true, pending_cleared: pendingCleared, generated: generatedNow });
     }
     // 発信の方向性（構造化：メインテーマ/サブテーマ/届けたい相手/スタンス）。
     // niche(メイン) を accounts に、まとめテキストを corpus.direction に保存（上書き）。
@@ -1277,6 +1293,7 @@ export default {
       const r = await registerWithHonbu(env, uid, acc?.handle ?? null, email, code, url.origin);
       if (!r.ok) {
         const msg = r.error === "invite_invalid" ? "招待コードが正しくありません。確認して入れ直してください。"
+          : r.error === "invite_not_personal" ? "そのコードは紹介リンク用です。紹介リンクを開いてお名前とメールを登録すると、あなた専用の招待コードがメールで届きます。そのコードを入れてください。"
           : r.error === "invite_used_up" ? "この招待コードは使用上限に達しています。運営にお問い合わせください。"
           : r.error === "invite_required" ? "招待コードを入力してください。"
           : r.error === "unreachable" || r.error === "honbu_unconfigured" ? "本部に接続できませんでした。少し待って、もう一度お試しください。"
@@ -2958,6 +2975,7 @@ export default {
   // Cronは細かめ（*/10）。予約は not_before（基本配信時間±10分のゆらぎ）で持つので、
   // 毎回「期限が来た予約」を1本ずつ出す。メトリクス/サイクルは指定時刻に実行。
   async scheduled(event: ScheduledController, env: Env): Promise<void> {
+    setClaudeRelay(env.US_RELAY); // Claude呼び出しを米国配置DO経由に（HKG実行時の地域ブロック回避）
     await refreshPrompts(env).catch(() => {}); // 本部からプロンプト本体を最新化＋反映（生成系より前に・失敗してもキャッシュで継続）
     const jst = new Date(event.scheduledTime + 9 * 3600_000);
     const hhmm =

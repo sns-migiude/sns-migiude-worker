@@ -367,24 +367,30 @@ export async function generateDrafts(
     let parsed: { posts?: GeneratedDraft[] };
     try {
       parsed = extractJson(text);
-    } catch {
-      return []; // 拒否応答や構造化失敗時は空
+    } catch (je) {
+      // 拒否応答や構造化失敗時は空。原因調査のため要約をログに残す（本文は先頭だけ）。
+      console.error(`[gen] JSON抽出失敗: ${je instanceof Error ? je.message : je} / text先頭=${(text || "").slice(0, 100).replace(/\n/g, " ")}`);
+      return [];
     }
     const ds = (parsed.posts ?? []).filter((d) => d.body && d.body.trim());
     // 床チェック：字数オーバー／不足／禁止パターン（08章 Layer 1）に触れるものは落とす。
-    return ds.filter((d) => {
-      if (weightedLength(d.body) > bodyWeightMax) return false;
+    // どこで何件落ちたかをログに残す（生成が静かに0件になる問題の診断用）。
+    const drop = { len: 0, replyMissing: 0, replyLen: 0, ng: 0 };
+    const kept0 = ds.filter((d) => {
+      if (weightedLength(d.body) > bodyWeightMax) { drop.len++; return false; }
       // パターンが分かっているときは形式を強制：単発は2本目を捨て、連結は2本目が無ければ落とす。
       if (pat) {
         if (pat.kind === "single") { if (d.reply_text) delete d.reply_text; }
-        else if (!(d.reply_text && d.reply_text.trim())) return false;
+        else if (!(d.reply_text && d.reply_text.trim())) { drop.replyMissing++; return false; }
       }
       const rw = (d.reply_text && d.reply_text.trim()) ? weightedLength(d.reply_text) : 0;
-      if (rw > replyMaxWeight) return false;
-      if (replyMinWeight > 0 && rw < replyMinWeight) return false; // 連結・短＋長：2本目が短すぎたら落とす
-      if (checkPost(d.body).length > 0) return false;
+      if (rw > replyMaxWeight) { drop.replyLen++; return false; }
+      if (replyMinWeight > 0 && rw < replyMinWeight) { drop.replyLen++; return false; } // 連結・短＋長：2本目が短すぎたら落とす
+      if (checkPost(d.body).length > 0) { drop.ng++; return false; }
       return true;
     });
+    console.log(`[gen] pat=${pat ? pat.kind : "-"} 生成=${ds.length} 採用=${kept0.length} 落選={字数:${drop.len},2本目欠:${drop.replyMissing},2本目長短:${drop.replyLen},禁止:${drop.ng}} 上限=${bodyWeightMax}`);
+    return kept0;
   }
 
   // 直近50件＋同バッチと「一切かぶらない」よう機械的に弾く。落ちた分は追加生成で埋める（最大3ラウンド）。
