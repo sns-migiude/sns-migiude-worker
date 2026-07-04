@@ -22,6 +22,11 @@ export interface TweetMetrics {
   bookmarks: number | null;
   urlLinkClicks: number | null;
   userProfileClicks: number | null;
+  // オーガニック/広告の内訳（tweet.fields=organic_metrics,promoted_metrics）。
+  // 広告(promoted)は「そのポストが広告に使われた時だけ」返る＝広告の自動判別に使う。
+  // 取得できないプラン/権限ではフォールバックで undefined のまま（既存動作と同じ）。
+  organic?: { impressions: number | null; likes: number | null; retweets: number | null; replies: number | null };
+  promoted?: { impressions: number | null; likes: number | null; retweets: number | null; replies: number | null };
 }
 
 const enc = new TextEncoder();
@@ -161,6 +166,12 @@ export async function createPost(
   return body.data.id;
 }
 
+interface RawContextMetrics {
+  impression_count?: number;
+  like_count?: number;
+  retweet_count?: number;
+  reply_count?: number;
+}
 interface RawTweet {
   id: string;
   public_metrics?: {
@@ -175,23 +186,31 @@ interface RawTweet {
     url_link_clicks?: number;
     user_profile_clicks?: number;
   };
+  organic_metrics?: RawContextMetrics;
+  promoted_metrics?: RawContextMetrics;
 }
 
-// 最大100件ずつ取得。non_public_metricsは自分のポスト・30日以内のみ有効で、
-// アプリ権限によっては403になるため、失敗時はpublic_metricsのみで再試行する。
+// 最大100件ずつ取得。non_public/organic/promoted は自分のポスト・30日以内のみ有効で、
+// プラン/権限によっては403/400になるため、段階的にフィールドを落として再試行する：
+//   ①public+non_public+organic+promoted → ②public+non_public → ③publicのみ
+// （organic/promoted＝広告内訳。promoted_metricsは広告に使われたポストにだけ付く＝広告の自動判別）
 export async function fetchTweetMetrics(
   creds: XCreds,
   tweetIds: string[],
-  includeNonPublic: boolean
+  includeNonPublic: boolean,
+  fieldLevel?: number
 ): Promise<TweetMetrics[]> {
   if (tweetIds.length === 0) return [];
   if (tweetIds.length > 100) throw new Error("一度に取得できるのは100件まで");
 
+  const LEVELS = [
+    "public_metrics,non_public_metrics,organic_metrics,promoted_metrics",
+    "public_metrics,non_public_metrics",
+    "public_metrics",
+  ];
+  const level = fieldLevel ?? (includeNonPublic ? 0 : 2);
   const url = "https://api.x.com/2/tweets";
-  const fields = includeNonPublic
-    ? "public_metrics,non_public_metrics"
-    : "public_metrics";
-  const params = { ids: tweetIds.join(","), "tweet.fields": fields };
+  const params = { ids: tweetIds.join(","), "tweet.fields": LEVELS[level] };
   const auth = await oauthHeader(creds, "GET", url, params);
   const res = await fetch(`${url}?${buildQuery(params)}`, {
     headers: { Authorization: auth },
@@ -199,12 +218,22 @@ export async function fetchTweetMetrics(
   const bodyText = await res.text();
 
   if (!res.ok) {
-    if (includeNonPublic && (res.status === 403 || res.status === 400)) {
-      return fetchTweetMetrics(creds, tweetIds, false);
+    if (level < 2 && (res.status === 403 || res.status === 400)) {
+      console.log(`[xapi] metrics fields level${level} 不可(${res.status})→level${level + 1}で再試行`);
+      return fetchTweetMetrics(creds, tweetIds, includeNonPublic, level + 1);
     }
     throw new XApiError(res.status, bodyText);
   }
 
+  const ctx = (m?: RawContextMetrics) =>
+    m
+      ? {
+          impressions: m.impression_count ?? null,
+          likes: m.like_count ?? null,
+          retweets: m.retweet_count ?? null,
+          replies: m.reply_count ?? null,
+        }
+      : undefined;
   const body = JSON.parse(bodyText) as { data?: RawTweet[] };
   return (body.data ?? []).map((t) => ({
     tweetId: t.id,
@@ -216,6 +245,8 @@ export async function fetchTweetMetrics(
     bookmarks: t.public_metrics?.bookmark_count ?? null,
     urlLinkClicks: t.non_public_metrics?.url_link_clicks ?? null,
     userProfileClicks: t.non_public_metrics?.user_profile_clicks ?? null,
+    organic: ctx(t.organic_metrics),
+    promoted: ctx(t.promoted_metrics),
   }));
 }
 

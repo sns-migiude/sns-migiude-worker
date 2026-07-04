@@ -67,7 +67,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.19";
+const CODE_VERSION = "1.20";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -1223,6 +1223,14 @@ export default {
         `SELECT value_json AS v FROM individual_profile WHERE account_id = ? AND key = 'url_posts'`
       ).bind(acc).first<{ v: string }>();
       const urlPosts = urlRow?.v === "1"; // URL誘導ポストの解放フラグ
+      const lbRow = await env.DB.prepare(
+        `SELECT value_json AS v FROM individual_profile WHERE account_id = ? AND key = 'learn_basis'`
+      ).bind(acc).first<{ v: string }>();
+      const learnBasis = (lbRow?.v === "promo" || lbRow?.v === '"promo"') ? "promo" : "organic"; // 学習基準トグル（既定=オーガニック優先）
+      const promoRow = await env.DB.prepare(
+        `SELECT COUNT(*) AS n FROM posts WHERE account_id = ? AND promoted = 1`
+      ).bind(acc).first<{ n: number }>().catch(() => null);
+      const promotedCount = promoRow?.n ?? 0; // 広告に使った投稿の数（自動判別＋手動マーク）
       const linkRow = await env.DB.prepare(
         `SELECT value_json AS v FROM individual_profile WHERE account_id = ? AND key = 'link_targets'`
       ).bind(acc).first<{ v: string }>();
@@ -1262,6 +1270,8 @@ export default {
         char_limit: xPremium ? 1000 : 140,
         auto_expand: autoExpand,
         url_posts: urlPosts,
+        learn_basis: learnBasis, // 学習基準：organic（既定）/ promo
+        promoted_count: promotedCount, // 広告に使った投稿数（トグルの意味が出るか判断用）
         card_on: (await loadCardTheme(env, acc))?.on === true, // 画像カード・マスターON＝検索/型に画像付きを出す
 
         link_targets: linkTargets,
@@ -2280,7 +2290,31 @@ export default {
       let autoDemote = false; let autoUnadopted: unknown[] = [];
       try { const r = await env.DB.prepare(`SELECT value_json AS v FROM individual_profile WHERE account_id = ? AND key = 'auto_demote'`).bind(acc).first<{ v: string }>(); autoDemote = r?.v === "1" || r?.v === "true"; } catch { /* 既定OFF */ }
       try { const r = await env.DB.prepare(`SELECT value_json AS v FROM individual_profile WHERE account_id = ? AND key = 'auto_unadopted'`).bind(acc).first<{ v: string }>(); const a = r?.v ? JSON.parse(r.v) : []; if (Array.isArray(a)) autoUnadopted = a; } catch { /* 空 */ }
-      return json({ ok: true, custom, standard, active, min_active: 10, premium, auto_demote: autoDemote, auto_unadopted: autoUnadopted });
+      let learnBasis = "organic"; let promotedCount = 0;
+      try { const r = await env.DB.prepare(`SELECT value_json AS v FROM individual_profile WHERE account_id = ? AND key = 'learn_basis'`).bind(acc).first<{ v: string }>(); if (r?.v === "promo" || r?.v === '"promo"') learnBasis = "promo"; } catch { /* 既定organic */ }
+      try { const r = await env.DB.prepare(`SELECT COUNT(*) AS n FROM posts WHERE account_id = ? AND promoted = 1`).bind(acc).first<{ n: number }>(); promotedCount = r?.n ?? 0; } catch { /* 0 */ }
+      return json({ ok: true, custom, standard, active, min_active: 10, premium, auto_demote: autoDemote, auto_unadopted: autoUnadopted, learn_basis: learnBasis, promoted_count: promotedCount });
+    }
+    // 学習基準トグル：organic（オーガニックの反応率優先・既定）/ promo（広告の反応率優先）。
+    // アカウント単位の“軸足の宣言”。型選択は優先側0.6＋非優先側0.4でブレンド（cycle.ts）。
+    if (req.method === "POST" && url.pathname === "/api/account/learn-basis") {
+      const b = (await req.json().catch(() => null)) as { account?: string; basis?: string } | null;
+      if (!b?.account) return json({ error: "account は必須" }, 400);
+      const basis = b.basis === "promo" ? "promo" : "organic";
+      await env.DB.prepare(
+        `INSERT INTO individual_profile (account_id, key, value_json, updated_at) VALUES (?, 'learn_basis', ?, datetime('now'))
+         ON CONFLICT(account_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = datetime('now')`
+      ).bind(b.account, basis).run();
+      return json({ ok: true, basis });
+    }
+    // 投稿に「広告に使った」手動マークを付け外し（APIで自動検出できない別広告アカウント出稿の保険）。
+    // 自動判別（promoted_metrics観測）とは独立で、どちらか一方でも1なら広告扱い。手動offは自動判別を消さない。
+    if (req.method === "POST" && url.pathname === "/api/post/promoted") {
+      const b = (await req.json().catch(() => null)) as { account?: string; post_id?: number; on?: boolean } | null;
+      if (!b?.account || !b.post_id) return json({ error: "account と post_id は必須" }, 400);
+      await env.DB.prepare(`UPDATE posts SET promoted = ? WHERE id = ? AND account_id = ?`)
+        .bind(b.on ? 1 : 0, b.post_id, b.account).run();
+      return json({ ok: true, on: !!b.on });
     }
     // 「スコアが低い型は自動で不採用にする」のON/OFFを保存。
     if (req.method === "POST" && url.pathname === "/api/account/auto-demote") {

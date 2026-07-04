@@ -1757,7 +1757,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     }, function(){ done(); var e2=$(divId); if(e2) e2.innerHTML="<div class='note' style='color:#c0392b'>通信に失敗しました。もう一度お試しください。</div>"; });
   }
   // ── 型の管理（採用ON/OFF ＋ 優先度。採用は常に10種以上）──
-  var TM_CUSTOM=[], TM_STD=[], TM_ACTIVE=0, TM_AUTO_DEMOTE=false, TM_UNADOPTED=[];
+  var TM_CUSTOM=[], TM_STD=[], TM_ACTIVE=0, TM_AUTO_DEMOTE=false, TM_UNADOPTED=[], TM_BASIS='organic', TM_PROMO_N=0;
   // 集合知での自分の型の評価（フライホイール）。型の管理の上部に表示。
   var TM_MINE=null;
   function loadMyTypes(){ if(TM_MINE){ renderMyTypes(); return; } api("GET","/api/hq/my-types").then(function(r){ TM_MINE=((r.body||{}).types)||[]; renderMyTypes(); }); }
@@ -1787,10 +1787,11 @@ export const DASHBOARD_HTML = `<!doctype html>
     var el=$("tmBody"); if(el) el.innerHTML="<div class='spin'></div>";
     TM_MINE=null;
     api("GET","/api/types/portfolio?account="+ACC).then(function(r){
-      var b=r.body||{}; TM_CUSTOM=b.custom||[]; TM_STD=b.standard||[]; TM_ACTIVE=b.active||0; TM_AUTO_DEMOTE=!!b.auto_demote; TM_UNADOPTED=b.auto_unadopted||[]; renderTypeManage();
+      var b=r.body||{}; TM_CUSTOM=b.custom||[]; TM_STD=b.standard||[]; TM_ACTIVE=b.active||0; TM_AUTO_DEMOTE=!!b.auto_demote; TM_UNADOPTED=b.auto_unadopted||[]; TM_BASIS=(b.learn_basis==='promo'?'promo':'organic'); TM_PROMO_N=b.promoted_count||0; renderTypeManage();
     });
   }
   function tmAutoDemote(on){ api("POST","/api/account/auto-demote",{account:ACC,on:on}).then(function(r){ if(r.body&&r.body.ok){ TM_AUTO_DEMOTE=on; msg(on?"スコアが低い型を自動で不採用にします（最低10種は残します）。":"自動不採用をオフにしました。"); } else { msg("変更できませんでした。",false); loadTypeManage(); } }); }
+  function tmBasis(basis){ api("POST","/api/account/learn-basis",{account:ACC,basis:basis}).then(function(r){ if(r.body&&r.body.ok){ TM_BASIS=r.body.basis; msg(r.body.basis==='promo'?"広告の反応率を優先して学習します（広告を基本戦略に使うアカウント向け）。":"オーガニックの反応率を優先して学習します（既定）。"); renderTypeManage(); } else { msg("変更できませんでした。",false); loadTypeManage(); } }); }
   function tmReadopt(key){ api("POST","/api/account/readopt",{account:ACC,key:key}).then(function(r){ if(r.body&&r.body.ok){ msg("採用に戻しました（以後は自動で外しません）。"); loadTypeManage(); refreshBadges&&refreshBadges(); } else { msg((r.body&&r.body.error)||"戻せませんでした。",false); } }); }
   // 型ごとの実績（実際に投稿した件数＋学習スコア＝平常比。URL誘導はクリック/CVの平常比）。
   function typeStatHtml(t){
@@ -1811,6 +1812,16 @@ export const DASHBOARD_HTML = `<!doctype html>
     h+="<div class='card' style='background:var(--accent-bg);border-color:#b5d4f4'><b>採用中：<span id='tmActive'>"+TM_ACTIVE+"</span> 種類</b> <span class='note'>（最低10種は必ず残します。OFFにできない＝それ以上は減らせません。控えめでも完全には止めず、AIが“当たり型”を探す幅を確保）</span></div>";
     h+="<div id='tmMine'></div>";
     // スコアが低い型を自動で不採用にするトグル。
+    // 学習基準トグル（オーガニック優先／広告優先）。広告を回すアカウントかどうかで軸足を宣言。
+    var org=(TM_BASIS!=='promo');
+    h+="<div class='card'><div style='font-weight:600;margin-bottom:8px'>学習の基準：どちらの反応率を優先する？</div>";
+    h+="<div class='note' style='margin-bottom:10px'>どの型を多めに使うかを決めるとき、<b>オーガニック（通常投稿）</b>と<b>広告でブーストした投稿</b>のどちらの反応率を軸にするかを選べます。選んだ側を6・もう片方を4の重みでブレンドします（もう片方も無視はしません）。</div>";
+    h+="<div class='row' style='gap:8px'>";
+    h+="<button "+(org?"class='primary'":"")+" style='flex:1"+(org?"":";background:var(--surface2);color:var(--fg);border:1px solid var(--border)")+"' onclick=\\"tmBasis('organic')\\">オーガニック優先<div class='note' style='font-weight:400;margin-top:2px;"+(org?"color:#fff":"")+"'>広告はたまに使う</div></button>";
+    h+="<button "+(!org?"class='primary'":"")+" style='flex:1"+(!org?"":";background:var(--surface2);color:var(--fg);border:1px solid var(--border)")+"' onclick=\\"tmBasis('promo')\\">広告優先<div class='note' style='font-weight:400;margin-top:2px;"+(!org?"color:#fff":"")+"'>広告を基本戦略に使う</div></button>";
+    h+="</div>";
+    h+="<div class='note' style='margin-top:8px'>"+(TM_PROMO_N>0?("これまで広告に使った投稿："+TM_PROMO_N+"件（広告に載せた投稿は自動で判別されます）"):"まだ広告に使った投稿は検出されていません。広告優先は、広告を回し始めてから効果が出ます。")+"</div>";
+    h+="</div>";
     h+="<div class='card'><div class='row' style='justify-content:space-between;align-items:center;gap:10px'><div style='min-width:0'><b>スコアが低い型を自動で不採用にする</b><div class='note' style='margin-top:2px'>ONにすると、十分にデータがたまった型のうち<b>平常比が低いもの</b>をサイクルで自動的に不採用にします（最低10種は必ず残す／手動で戻した型は再び外しません）。外した型は下の「不採用リスト」に残ります。</div></div><label class='switch' title='ONで自動不採用'><input type='checkbox' "+(TM_AUTO_DEMOTE?'checked':'')+" onchange='tmAutoDemote(this.checked)'><span class='slider'></span></label></div></div>";
     h+="<div class='card'><h3 style='margin-top:0'>あなたの型（"+TM_CUSTOM.length+"）</h3>";
     if(!TM_CUSTOM.length){ h+="<div class='note'>まだありません。「型の開発」で作るか、「型の検索」から取り込めます。</div>"; }

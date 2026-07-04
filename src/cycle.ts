@@ -12,6 +12,7 @@ import { nextQueueSlot } from "./schedule";
 import { TYPE_INSTRUCTIONS, CATALOG_KEYS, DEFAULT_ON, DEFAULT_ON_FREE, isLongType, PATTERNS, metaOf, URL_TYPE_INSTRUCTION, URL_STYLES } from "./taxonomy";
 import { callClaude } from "./claude";
 import { logClaudeUsage } from "./usage";
+import { ensurePromotedColumns } from "./collect";
 
 // 安定成果が最低10本たまってから学習する（初速の過大評価を避ける・06章）
 const MIN_LEARN_SAMPLE = 10;
@@ -136,14 +137,15 @@ interface SettledRow {
 // ① 学習：settled な成果から個性プロファイル（best_hours / hook_affinity / 長さ / 連結）を更新。
 //   最低10本に満たなければ学習しない（持ち越し・06章）。
 async function learnForAccount(env: Env, account: Account): Promise<boolean> {
+  await ensurePromotedColumns(env); // org/promo 列を保証（学習はcollectと別Cron＝ここでも確認。後続のlearnPromoAffinityも同DBでカバー）
   // 各投稿の「最新の settled スナップショット」を取る
   const rows = await env.DB.prepare(
     `SELECT p.hook AS hook, p.posted_at AS posted_at, p.chars AS chars,
             CASE WHEN p.reply_text IS NOT NULL AND trim(p.reply_text) <> '' THEN 1 ELSE 0 END AS is_thread,
-            m.er_raw AS er_raw
+            COALESCE(m.org_er_raw, m.er_raw) AS er_raw
        FROM posts p
        JOIN post_metrics m ON m.post_id = p.id
-      WHERE p.account_id = ? AND m.settled = 1 AND m.er_raw IS NOT NULL
+      WHERE p.account_id = ? AND m.settled = 1 AND COALESCE(m.org_er_raw, m.er_raw) IS NOT NULL
         AND m.fetched_at = (
           SELECT MAX(m2.fetched_at) FROM post_metrics m2
            WHERE m2.post_id = p.id AND m2.settled = 1
@@ -207,6 +209,29 @@ async function learnForAccount(env: Env, account: Account): Promise<boolean> {
       .bind(account.id, key, value)
       .run();
   }
+  return true;
+}
+
+// 広告学習（別アルゴリズム）：広告インプレッションでのER＝「冷たい観客（初見）への刺さり」を型別に学習。
+// 分母は広告インプ・基準は自分の広告ERの中央値（オーガニックとは基準も保存先も完全に分離）。
+// 出力 promo_affinity は、学習基準トグル（learn_basis）に応じて型選択に6:4でブレンドされる。
+const PROMO_LEARN_MIN = 3; // 広告学習に必要な最低本数（広告を使う人はまだ少ない前提で低め）
+async function learnPromoAffinity(env: Env, account: Account): Promise<boolean> {
+  const rows = await env.DB.prepare(
+    `SELECT p.hook AS hook, m.promo_er_raw AS er
+       FROM posts p JOIN post_metrics m ON m.post_id = p.id
+      WHERE p.account_id = ? AND m.settled = 1 AND m.promo_er_raw IS NOT NULL AND m.promo_impressions > 0 AND p.hook IS NOT NULL
+        AND m.fetched_at = (SELECT MAX(m2.fetched_at) FROM post_metrics m2 WHERE m2.post_id = p.id AND m2.settled = 1)`
+  ).bind(account.id).all<{ hook: string; er: number }>().catch(() => ({ results: [] as Array<{ hook: string; er: number }> }));
+  const posts = rows.results ?? [];
+  if (posts.length < PROMO_LEARN_MIN) return false;
+  const base = median(posts.map((r) => r.er).filter((v) => v > 0));
+  if (!(base > 0)) return false;
+  const stats = aggregate(posts.map((r) => ({ key: r.hook, er: r.er / base })));
+  await env.DB.prepare(
+    `INSERT INTO individual_profile (account_id, key, value_json, updated_at) VALUES (?, 'promo_affinity', ?, datetime('now'))
+     ON CONFLICT(account_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = datetime('now')`
+  ).bind(account.id, JSON.stringify(stats)).run();
   return true;
 }
 
@@ -276,8 +301,15 @@ async function autoUnadoptLowScore(env: Env, account: Account): Promise<number> 
   const affArr = (await read("hook_affinity")) as Array<{ key: string; median: number; n: number }> | null;
   const hookAff: Record<string, { median: number; n: number }> = {};
   if (Array.isArray(affArr)) for (const x of affArr) if (x && x.key) hookAff[x.key] = { median: x.median, n: x.n };
+  const promoArr = (await read("promo_affinity")) as Array<{ key: string; median: number; n: number }> | null;
+  const promoAff: Record<string, { median: number; n: number }> = {};
+  if (Array.isArray(promoArr)) for (const x of promoArr) if (x && x.key) promoAff[x.key] = { median: x.median, n: x.n };
+  const basisRaw = await read("learn_basis");
+  const basis: "organic" | "promo" = basisRaw === "promo" ? "promo" : "organic";
+  // URL誘導はクリック/CV優先。それ以外は学習基準トグルのブレンド値（広告主体アカで「広告では効く型」を誤って切らない）。
   const urlAff = ((await read("url_affinity")) as Record<string, { median: number; n: number }>) || {};
-  const statForKey = (key: string) => { const base = key.split("##")[0]; return urlAff[base] || urlAff[key] || hookAff[key] || null; }; // URL誘導はクリック/CV優先
+  // URL誘導はクリック/CV優先。それ以外は学習基準トグルのブレンド値（広告主体アカで「広告では効く型」を誤って切らない）。
+  const statForKey = (key: string) => { const base = key.split("##")[0]; return urlAff[base] || urlAff[key] || blendAffinity(hookAff[key], promoAff[key], basis); };
   const premium = await flag("x_premium");
   const urlOn = await flag("url_posts");
   const defaults = premium ? DEFAULT_ON : DEFAULT_ON_FREE;
@@ -467,18 +499,37 @@ async function loadActivePortfolio(env: Env, acc: string): Promise<Record<string
 }
 
 // 型別の学習パフォーマンス（平常比の中央値）と、微調整フェーズか（実測20本以上）を読む。
-async function loadHookPerf(env: Env, acc: string): Promise<{ affinity: Record<string, { median: number; n: number }>; tune: boolean }> {
-  const affinity: Record<string, { median: number; n: number }> = {}; let n = 0;
+type AffEntry = { median: number; n: number };
+async function loadHookPerf(env: Env, acc: string): Promise<{ affinity: Record<string, AffEntry>; promo: Record<string, AffEntry>; basis: "organic" | "promo"; tune: boolean }> {
+  const affinity: Record<string, AffEntry> = {}; const promo: Record<string, AffEntry> = {};
+  let n = 0; let basis: "organic" | "promo" = "organic";
   try {
-    const rows = await env.DB.prepare(`SELECT key, value_json AS v FROM individual_profile WHERE account_id = ? AND key IN ('hook_affinity','sample_size')`).bind(acc).all<{ key: string; v: string }>();
+    const rows = await env.DB.prepare(`SELECT key, value_json AS v FROM individual_profile WHERE account_id = ? AND key IN ('hook_affinity','promo_affinity','sample_size','learn_basis')`).bind(acc).all<{ key: string; v: string }>();
     for (const r of rows.results ?? []) {
       try {
-        if (r.key === "hook_affinity") { const arr = JSON.parse(r.v); if (Array.isArray(arr)) for (const x of arr) if (x && x.key) affinity[x.key] = { median: x.median, n: x.n ?? 0 }; }
+        if (r.key === "hook_affinity" || r.key === "promo_affinity") {
+          const arr = JSON.parse(r.v);
+          const dst = r.key === "hook_affinity" ? affinity : promo;
+          if (Array.isArray(arr)) for (const x of arr) if (x && x.key) dst[x.key] = { median: x.median, n: x.n ?? 0 };
+        }
         else if (r.key === "sample_size") { n = JSON.parse(r.v).n ?? 0; }
+        else if (r.key === "learn_basis") { if (r.v === "promo" || r.v === '"promo"') basis = "promo"; }
       } catch { /* 空 */ }
     }
   } catch { /* 未学習 */ }
-  return { affinity, tune: n >= TUNE_MIN_SAMPLE };
+  return { affinity, promo, basis, tune: n >= TUNE_MIN_SAMPLE };
+}
+
+// 学習基準のブレンド（優先側0.6＋非優先側0.4）。片方しか実測が無い型はある方を100%＝
+// 「広告に載せたことがない型」「オーガニック実績がまだ無い型」が不利にならない。
+function blendAffinity(org: AffEntry | undefined, promo: AffEntry | undefined, basis: "organic" | "promo"): AffEntry | null {
+  const o = org && org.n >= MIN_AFFINITY_N ? org : null;
+  const p = promo && promo.n >= MIN_AFFINITY_N ? promo : null;
+  if (o && p) {
+    const wOrg = basis === "promo" ? 0.4 : 0.6;
+    return { median: o.median * wOrg + p.median * (1 - wOrg), n: o.n + p.n };
+  }
+  return o || p || null;
 }
 
 // 重み付きランダム按分。各枠を重みに比例した確率で型に割り当てる（＝毎回ちがう型が選ばれる）。
@@ -510,11 +561,12 @@ async function genOmakase(env: Env, account: Account, count: number, guide: stri
   // url（URL誘導）はリンク注入・CV計測が要るため、ここでは生成しない（専用フローが担当）。
   const patterns = Object.keys(byPattern).filter((p) => p !== "url");
   if (!patterns.length) return (await generateDrafts(env, account, count, guide, undefined, seedAvoid)) as Array<{ body: string; hook: string; reply_text?: string }>;
-  const { affinity, tune } = await loadHookPerf(env, account.id);
+  const { affinity, promo, basis, tune } = await loadHookPerf(env, account.id);
   const PW: Record<string, number> = { more: 3, normal: 2, less: 1 };
   const fullKey = (hook: string, p: string) => (hook.indexOf("⭐") === 0 ? hook : `${hook}##${p}`);
   // ② 微調整期でも、その型の実測が MIN_AFFINITY_N 本未満なら中立(1.0)＝1本のマグレ/事故で採用率が2.5倍動かない。
-  const perfFactor = (key: string) => { if (!tune) return 1; const a = affinity[key]; if (!a || a.n < MIN_AFFINITY_N) return 1; return a.median >= 1.1 ? 1.5 : a.median < 0.9 ? 0.6 : 1.0; };
+  // 学習基準トグル：オーガニック優先(既定)＝オーガニック0.6+広告0.4／広告優先＝広告0.6+オーガニック0.4。
+  const perfFactor = (key: string) => { if (!tune) return 1; const b = blendAffinity(affinity[key], promo[key], basis); if (!b) return 1; return b.median >= 1.1 ? 1.5 : b.median < 0.9 ? 0.6 : 1.0; };
   const hookW = (h: HookEntry, p: string) => (PW[h.priority] || 2) * perfFactor(fullKey(h.hook, p));
   const pweight = patterns.map((p) => byPattern[p].hooks.reduce((s, h) => s + hookW(h, p), 0) || 1);
   const alloc = allocateByWeight(count, pweight);
@@ -801,6 +853,7 @@ export async function runCycleForAccount(env: Env, acc: Account): Promise<{ lear
       // ── サイクル切替：学習し直し → 古い傾向の“自動生成”予約を作り直し（厳密にサイクルを保持） ──
       const learned = await learnForAccount(env, acc);
       await learnUrlAffinity(env, acc); // URL誘導はクリック/CVで学習（誘導スタイルの良し悪し）
+      await learnPromoAffinity(env, acc); // 広告ERの型別学習（広告を使った投稿がある人だけ・別基準）
       await autoUnadoptLowScore(env, acc); // 設定ONなら低スコア型を自動不採用（微調整期・床10維持）
       await updateExecNotes(env, acc); // 型別の実行ノート（微調整）を更新。新しい添削があった型だけ
       // 未投稿の“自動生成”予約(source=tool)だけ破棄。会員が編集/手動生成した分(source=manual)・承認待ち(pending)は残す。
