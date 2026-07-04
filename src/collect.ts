@@ -161,11 +161,14 @@ async function collectMetricsForAccount(
       // ・promoted側：広告に使われたポストにだけ返る＝広告インプ>0で自動判別に使う。
       let orgImp: number | null = null, orgEr: number | null = null;
       let promoImp: number | null = null, promoEr: number | null = null;
-      if (m.organic) {
-        orgImp = m.organic.impressions ?? 0;
+      // organic内訳は「インプ>0で実際に集計されている時」だけ採用。
+      // 若い投稿だとXが organic を一時的に0で返す（集計遅延）ため、それを 0スコアとして保存すると
+      // 反応のあった投稿を“死んだ投稿”と誤学習する → その場合は null にして合算ERにフォールバックさせる。
+      if (m.organic && (m.organic.impressions ?? 0) > 0) {
+        orgImp = m.organic.impressions as number;
         const oReplies = Math.max(0, (m.organic.replies ?? 0) - selfN) * avgW;
         const oEng = (m.organic.likes ?? 0) + (m.organic.retweets ?? 0) + (m.quotes ?? 0) + (m.bookmarks ?? 0) + oReplies;
-        orgEr = orgImp > 0 ? oEng / orgImp : 0;
+        orgEr = oEng / orgImp;
       }
       if (m.promoted && (m.promoted.impressions ?? 0) > 0) {
         promoImp = m.promoted.impressions ?? 0;
