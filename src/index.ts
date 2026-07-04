@@ -1789,12 +1789,14 @@ export default {
         hook: string | null; body: string; posted_at: string; pid: string | null;
         impressions: number | null; likes: number | null; reposts: number | null; replies: number | null;
         quotes: number | null; bookmarks: number | null; url_link_clicks: number | null;
-        er_raw: number | null; er_norm: number | null;
+        er_raw: number | null; er_norm: number | null; promoted: number | null;
+        org_impressions: number | null; org_er_raw: number | null; promo_impressions: number | null; promo_er_raw: number | null;
       }> = [];
       try {
         const r = await env.DB.prepare(
-          `SELECT p.hook AS hook, p.body AS body, p.posted_at AS posted_at, p.platform_post_id AS pid,
-                  m.impressions, m.likes, m.reposts, m.replies, m.quotes, m.bookmarks, m.url_link_clicks, m.er_raw, m.er_norm
+          `SELECT p.hook AS hook, p.body AS body, p.posted_at AS posted_at, p.platform_post_id AS pid, p.promoted AS promoted,
+                  m.impressions, m.likes, m.reposts, m.replies, m.quotes, m.bookmarks, m.url_link_clicks, m.er_raw, m.er_norm,
+                  m.org_impressions, m.org_er_raw, m.promo_impressions, m.promo_er_raw
              FROM posts p
              JOIN post_metrics m ON m.post_id = p.id
             WHERE p.account_id = ? AND p.status = 'posted'${periodSql}
@@ -1841,6 +1843,24 @@ export default {
       } catch { /* sentiment未対応の古いDBでも分析は動かす */ }
       const sentiTotal = senti.pos + senti.neu + senti.neg;
 
+      // オーガニック/広告の内訳（内訳が取れている投稿だけで平均。広告を使った投稿がある人だけ意味を持つ）。
+      const orgRows = rows.filter((r) => r.org_impressions != null && (r.org_impressions ?? 0) > 0);
+      const promoRows = rows.filter((r) => r.promo_impressions != null && (r.promo_impressions ?? 0) > 0);
+      const promotedPosts = rows.filter((r) => (r.promoted ?? 0) === 1).length;
+      const breakdown = {
+        promoted_posts: promotedPosts, // 広告に使った投稿数（期間内）
+        organic: orgRows.length ? {
+          n: orgRows.length,
+          avg_impressions: Math.round(avg(orgRows.map((r) => num(r.org_impressions)))),
+          avg_er_pct: Math.round(avg(orgRows.map((r) => num(r.org_er_raw))) * 1000) / 10,
+        } : null,
+        promoted: promoRows.length ? {
+          n: promoRows.length,
+          avg_impressions: Math.round(avg(promoRows.map((r) => num(r.promo_impressions)))),
+          avg_er_pct: Math.round(avg(promoRows.map((r) => num(r.promo_er_raw))) * 1000) / 10,
+        } : null,
+      };
+
       // サマリー
       const summary = {
         posts: rows.length,
@@ -1854,6 +1874,7 @@ export default {
         reply_neg: senti.neg,
         reply_pos_pct: sentiTotal ? Math.round((senti.pos / sentiTotal) * 100) : null,
         reply_neg_pct: sentiTotal ? Math.round((senti.neg / sentiTotal) * 100) : null,
+        breakdown,
       };
       // 1グループ（型・時間帯）の平均指標。順位の公平性のため正規化er中央値(score)も付ける。
       type Row = typeof rows[number];

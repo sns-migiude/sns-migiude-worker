@@ -2398,6 +2398,19 @@ export const DASHBOARD_HTML = `<!doctype html>
       if(s.reply_classified>=5) h+=aTile("反応の中身","ポジ"+s.reply_pos_pct+"% / ネガ"+s.reply_neg_pct+"%");
       h+="</div>";
       if(s.reply_classified>=5) h+="<div class='note' style='margin-top:8px'>他の人からのリプの中身（ポジ/ネガ）を反応率に反映しています。ポジは少し高め・ネガは少し低めに評価（±20%・自分のリプは除外）。件数が少ないうちは反映しません。</div>";
+      // オーガニック/広告の反応率の内訳（広告に使った投稿がある期間だけ表示）
+      var bd=s.breakdown||{};
+      if(bd.promoted_posts>0 && (bd.organic||bd.promoted)){
+        h+="<div style='margin-top:12px;border-top:1px solid var(--border);padding-top:12px'>";
+        h+="<div class='row' style='justify-content:space-between;align-items:center;margin-bottom:8px'><b>オーガニック / 広告の内訳</b><span class='pill'>この期間 広告 "+bd.promoted_posts+"本</span></div>";
+        h+="<div style='display:grid;grid-template-columns:1fr 1fr;gap:10px'>";
+        var oq=bd.organic, pq=bd.promoted;
+        h+="<div class='card' style='margin:0'><div class='note'>オーガニック（通常の表示）</div>"+(oq?("<div style='font-size:19px;font-weight:600;margin-top:2px'>反応率 "+oq.avg_er_pct+"%</div><div class='note'>平均インプ "+comma(oq.avg_impressions)+" ・ "+oq.n+"本</div>"):"<div class='note' style='margin-top:6px'>データ待ち</div>")+"</div>";
+        h+="<div class='card' style='margin:0;border-color:#b5d4f4'><div class='note'>広告（ブースト分）</div>"+(pq?("<div style='font-size:19px;font-weight:600;margin-top:2px'>反応率 "+pq.avg_er_pct+"%</div><div class='note'>平均インプ "+comma(pq.avg_impressions)+" ・ "+pq.n+"本</div>"):"<div class='note' style='margin-top:6px'>データ待ち</div>")+"</div>";
+        h+="</div>";
+        h+="<div class='note' style='margin-top:8px'>広告は「初見の人」に届くので反応率はオーガニックより低く出るのが普通です。学習では両者を別々に評価します（型の管理の「学習の基準」で軸足を選べます）。</div>";
+        h+="</div>";
+      }
       h+="</div>";
       // 改善のヒント（常時3枚のカード＋手動で別案ローテ）
       ANALYSIS_CARDS=b.cards||[]; ANALYSIS_FOCUS=b.focus||null; CARD_OFFSET=0;
