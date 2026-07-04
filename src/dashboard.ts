@@ -2444,7 +2444,8 @@ export const DASHBOARD_HTML = `<!doctype html>
   ];
   function rankCatData(){ if(!ANALYSIS)return []; if(RANK_CAT==="post")return ANALYSIS.by_post||[]; if(RANK_CAT==="hour")return ANALYSIS.by_hour||[]; return ANALYSIS.by_type||[]; }
   function nameLabel(){ return RANK_CAT==="post"?"ポスト":RANK_CAT==="hour"?"時間":"型"; }
-  function nameOf(row){ return RANK_CAT==="post"?(esc(row.body)+xLink(row.pid)):RANK_CAT==="hour"?(row.hour+"時台"):esc(row.hook_label||row.hook); }
+  function adBadge(row){ return (RANK_CAT==="post" && row && row.promoted) ? " <span class='pill' style='background:var(--accent-bg);color:var(--accent-strong);font-size:11px'>広告</span>" : ""; }
+  function nameOf(row){ return RANK_CAT==="post"?(esc(row.body)+adBadge(row)+xLink(row.pid)):RANK_CAT==="hour"?(row.hour+"時台"):esc(row.hook_label||row.hook); }
   function sortVal(row,col){
     if(col==="__name"){ if(RANK_CAT==="hour")return row.hour; if(RANK_CAT==="post")return new Date(String(row.posted_at).replace(" ","T")+"Z").getTime(); return row.hook||""; }
     return (row[col]!=null)?row[col]:-1;

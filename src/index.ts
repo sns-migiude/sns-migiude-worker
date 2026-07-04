@@ -67,7 +67,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.20";
+const CODE_VERSION = "1.21";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -1925,6 +1925,9 @@ export default {
         impressions: num(r.impressions), likes: num(r.likes), reposts: num(r.reposts),
         quotes: num(r.quotes), bookmarks: num(r.bookmarks), clicks: num(r.url_link_clicks),
         er_pct: erPct(r.er_raw), score: r.er_norm != null ? Math.round(r.er_norm * 100) / 100 : null,
+        promoted: (r.promoted ?? 0) === 1, // 広告に使った投稿（自動判別）
+        promo_er_pct: r.promo_er_raw != null ? erPct(r.promo_er_raw) : null, // 広告分の反応率（あれば）
+        org_er_pct: r.org_er_raw != null ? erPct(r.org_er_raw) : null,       // オーガニック分の反応率（あれば）
       }));
 
       // 改善カード（行動に移せる focus＝サイクルを寄せられる）＋ 補足インサイト。
