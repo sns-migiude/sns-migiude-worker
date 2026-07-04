@@ -67,7 +67,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.18";
+const CODE_VERSION = "1.19";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -878,12 +878,15 @@ export default {
     }
     // N日分を即時生成（削除はしない・在庫に追加）。days=1〜14。
     if (req.method === "POST" && url.pathname === "/api/account/generate-days") {
-      const b = (await req.json().catch(() => null)) as { account?: string; days?: number } | null;
+      const b = (await req.json().catch(() => null)) as { account?: string; days?: number; one?: boolean } | null;
       if (!b?.account) return json({ error: "account は必須" }, 400);
       try {
-        const r = await generateDaysForAccount(env, b.account); // 常に1日分（在庫上限まで）
+        // one=true：1本だけ生成（画面側が1日分を1本ずつ複数リクエストで呼ぶ。
+        // 無料プランのワーカーで1リクエストに複数の長い生成を詰めるとCloudflareの実行制限で落ちるため）。
+        const r = await generateDaysForAccount(env, b.account, undefined, b.one ? 1 : 0);
         if (r.at_cap) return json({ ok: false, at_cap: true, error: `予約の在庫が上限（${r.cap}本）です。今ある予約が投稿されると、また追加できます。` }, 200);
-        return json({ ok: true, ...r });
+        const dayTotal = Math.min(r.per_day ?? 1, r.room ?? 1);
+        return json({ ok: true, ...r, day_total: dayTotal });
       } catch (e) {
         return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 200);
       }
@@ -1118,17 +1121,14 @@ export default {
       //   手動→自動の切替後、誰にも承認されないpendingが在庫上限を塞ぎ自動補充が飢餓するため。
       //   pendingはAIの未承認下書き＝消しても学習は失われない（いつでも作り直せる）。
       let pendingCleared = 0;
-      let generatedNow = 0;
       if (mode === "auto") {
         const del = await env.DB.prepare(`DELETE FROM posts WHERE account_id = ? AND status = 'pending'`)
           .bind(b.account).run().catch(() => null);
         pendingCleared = del?.meta?.changes ?? 0;
-        try {
-          const g = await generateDaysForAccount(env, b.account); // 1日分を即時生成（在庫上限まで）
-          generatedNow = g.generated;
-        } catch (ge) { console.error(`[mode-save] 補充失敗: ${ge instanceof Error ? ge.message : ge}`); }
       }
-      return json({ ok: true, pending_cleared: pendingCleared, generated: generatedNow });
+      // 補充生成はここでは行わない（1リクエストに複数の長い生成を詰めると実行制限で落ちる）。
+      // 画面側が needs_generate を見て、1本ずつの生成リクエストを回す。
+      return json({ ok: true, pending_cleared: pendingCleared, needs_generate: mode === "auto" });
     }
     // 発信の方向性（構造化：メインテーマ/サブテーマ/届けたい相手/スタンス）。
     // niche(メイン) を accounts に、まとめテキストを corpus.direction に保存（上書き）。

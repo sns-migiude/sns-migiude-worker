@@ -19,6 +19,12 @@ import { logClaudeUsage } from "./usage";
 // この時間が過ぎたら成果が安定したとみなす（初速の過大評価を避ける・06章）
 const SETTLE_HOURS = 48;
 
+// 平常比(er_norm)の分母＝このアカウント自身の「確定済みERの中央値」を測る窓と最小本数。
+// 当日の収集バッチだけで割ると不安定になる（1本の日は自己割りで1.0固定・若い未確定投稿が混入）ため、
+// 確定履歴を分母にして日をまたいで比較可能にする（①の修正）。
+const BASELINE_WINDOW_DAYS = 60; // 直近この日数の確定済みERで基準を測る
+const BASELINE_MIN_N = 5;        // 基準に必要な確定サンプル数。これ未満はブートストラップ（当日バッチ）で代用
+
 // 反応の内容(ポジ/ネガ)による弱い補正（A案・角を残す）。ポジ1.2 / 中立1.0 / ネガ0.8 ＝ 6:4。
 // 中立を1.0に据えるので「リプ全体の量感は今のまま・中身で±20%だけ傾く」。会員ローカルのみ（本部に送らない）。
 const REPLY_W: Record<string, number> = { pos: 1.2, neu: 1.0, neg: 0.8 };
@@ -131,15 +137,29 @@ async function collectMetricsForAccount(
   }
   if (collected.length === 0) return 0;
 
-  // 平常比の基準＝このアカウント自身の最近のER中央値。
-  // これで割ることで「その人にとって平常比どれだけ伸びたか」に揃う（大小アカ公平・04章）。
-  const baseline = median(
-    collected.filter((c) => (c.m.impressions ?? 0) > 0).map((c) => c.erRaw)
-  );
+  // 平常比の基準＝このアカウント自身の「確定済みERの中央値」（直近BASELINE_WINDOW_DAYS日）。
+  // 当日の収集バッチだけで割ると、1本だけの日は自己割り(=1.0)、若い投稿の未確定ERの混入で歪む（①）。
+  // 確定履歴（imp>0・er_raw>0の最新スナップショット）＋今回バッチの確定分をプールして中央値を取る。
+  const histRows = await env.DB.prepare(
+    `SELECT m.er_raw AS er FROM post_metrics m JOIN posts p ON p.id = m.post_id
+      WHERE m.account_id = ? AND m.settled = 1 AND m.er_raw IS NOT NULL AND m.er_raw > 0 AND m.impressions > 0
+        AND p.posted_at >= datetime('now', ?)
+        AND m.fetched_at = (SELECT MAX(m2.fetched_at) FROM post_metrics m2 WHERE m2.post_id = p.id AND m2.settled = 1)`
+  ).bind(account.id, `-${BASELINE_WINDOW_DAYS} days`).all<{ er: number }>().catch(() => ({ results: [] as Array<{ er: number }> }));
+  const pool = (histRows.results ?? []).map((r) => r.er);
+  for (const c of collected) if (c.settled === 1 && (c.m.impressions ?? 0) > 0 && c.erRaw > 0) pool.push(c.erRaw);
+  let baseline = pool.length >= BASELINE_MIN_N ? median(pool) : 0;
+  if (baseline <= 0) {
+    // ブートストラップ（確定履歴が浅い新規）：当日バッチの正のERで暫定基準（データが貯まれば自然に安定）。
+    baseline = median(collected.filter((c) => (c.m.impressions ?? 0) > 0 && c.erRaw > 0).map((c) => c.erRaw));
+  }
 
   let saved = 0;
   for (const c of collected) {
     const erNorm = baseline > 0 ? c.erRaw / baseline : null;
+    // ③ 基準が出せない日（baseline<=0＝反応がまだ全く無い新規）は確定させない＝翌日以降に再取得してリトライ。
+    //    基準さえ出れば、反応ゼロの投稿も er_norm=0（＝効かなかった正しい記録）として確定・学習に入る。
+    const settledFinal = c.settled === 1 && baseline > 0 ? 1 : 0;
     await env.DB.prepare(
       `INSERT INTO post_metrics
         (post_id, account_id, impressions, likes, reposts, replies, quotes, bookmarks,
@@ -159,7 +179,7 @@ async function collectMetricsForAccount(
         c.m.userProfileClicks,
         c.erRaw,
         erNorm,
-        c.settled
+        settledFinal
       )
       .run();
     saved++;

@@ -124,6 +124,11 @@ export async function callClaude(opts: ClaudeOpts): Promise<{
   }
   if (opts.stream) body.stream = true;
 
+  // 中継DO経由のストリーミングは、稀に一過性の失敗（DOの再配置・境界越えストリームの
+  // 切断・Anthropic側の5xx/過負荷）で落ちる。その場でリトライして自己回復させる。
+  //（失敗はテキスト生成の前に起きるのが大半。途中で切れても再要求で作り直すだけ。）
+  const RETRYABLE = new Set([408, 409, 425, 429, 500, 502, 503, 504, 529]);
+  const runOnce = async (): Promise<{ text: string; usage: ClaudeResponse["usage"] }> => {
   const res = await anthropicFetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -192,4 +197,20 @@ export async function callClaude(opts: ClaudeOpts): Promise<{
     .map((b) => b.text)
     .join("");
   return { text, usage: parsed.usage };
+  };
+
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 500 * attempt));
+    try {
+      return await runOnce();
+    } catch (e) {
+      lastErr = e;
+      const status = e instanceof ClaudeError ? e.status : 0;
+      // 恒久エラー（400 不正リクエスト / 401 キー不正 / 403 地域ブロック等）は即中断。
+      // status=0（DO/ネットワーク例外）や 5xx/429 は一過性とみなしてリトライ。
+      if (status && !RETRYABLE.has(status)) throw e;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new ClaudeError(0, String(lastErr));
 }

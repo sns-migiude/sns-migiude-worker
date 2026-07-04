@@ -2899,10 +2899,18 @@ export const DASHBOARD_HTML = `<!doctype html>
     api("POST","/api/account/update",{ account:ACC, approval_mode:mode }).then(function(r){
       if(tg) tg.disabled=false;
       if (r.body&&r.body.ok){
-        var extra="";
-        if(on && (r.body.pending_cleared||0)>0){ extra=" 承認待ち"+r.body.pending_cleared+"件を整理し、"+(r.body.generated||0)+"件を新しく予約しました（承認待ちは自動モードでは使われないため）。"; }
-        else if(on && (r.body.generated||0)>0){ extra=" "+r.body.generated+"件を新しく予約しました。"; }
-        msg((on?"自動承認モードに切り替えました。":"手動承認モードに切り替えました。")+extra); loadMode();
+        var cleared=(r.body.pending_cleared||0);
+        if(on && r.body.needs_generate){
+          // 補充は1本ずつ（1リクエストに詰めると無料プランの実行制限で落ちるため）
+          genOneLoop(function(n,total){
+            msg("自動承認モードに切り替えました。新しい予約を生成中…（"+n+(total?("/"+total):"")+"本目）");
+          }, function(made){
+            var extra = cleared>0 ? " 承認待ち"+cleared+"件を整理し、"+made+"件を新しく予約しました（承認待ちは自動モードでは使われないため）。" : (made>0?(" "+made+"件を新しく予約しました。"):"");
+            msg("自動承認モードに切り替えました。"+extra); loadMode();
+          });
+        } else {
+          msg((on?"自動承認モードに切り替えました。":"手動承認モードに切り替えました。")); loadMode();
+        }
       }
       else { msg((r.body&&r.body.error)||"切り替えできませんでした。",false); loadMode(); } // loadModeが実状態に戻す
     });
@@ -3256,17 +3264,37 @@ export const DASHBOARD_HTML = `<!doctype html>
       else { msg((r.body&&r.body.error)||"キャンセルに失敗しました。",false); }
     });
   }
+  // 1日分を「1本ずつ」生成する（1リクエスト=1本。無料プランのCloudflare実行制限を超えないため）。
+  // onStep(次に作る番号, 全体数)で進捗を通知し、cbFinal(作れた本数, 最後の応答body)で終わる。
+  function genOneLoop(onStep, cbFinal){
+    var made=0, total=null, last=null;
+    function step(){
+      if(onStep) onStep(made+1, total);
+      api("POST","/api/account/generate-days",{account:ACC, one:true}).then(function(r){
+        var b=(r&&r.body)||{};
+        last=b;
+        if(b.ok){
+          if(total==null) total=Math.max(1, Math.min(b.day_total||1, 20));
+          made+=(b.generated||0);
+          if((b.generated||0)>0 && made<total){ loadScheduled(); refreshBadges(); step(); return; }
+        }
+        cbFinal(made, last);
+      });
+    }
+    step();
+  }
   function genDays(){
     var btn=$("genBtn"); if(btn){ btn.disabled=true; btn.textContent="生成中…"; }
-    api("POST","/api/account/generate-days",{account:ACC}).then(function(r){
+    genOneLoop(function(n,total){
+      if(btn) btn.textContent="生成中…（"+n+(total?("/"+total):"")+"本目）";
+    }, function(made, b){
       if(btn){ btn.disabled=false; btn.textContent="✨ 1日分を追加"; }
-      if(r.body&&r.body.ok){
-        var made=r.body.generated||0;
-        var where=(r.body.mode==="auto")?"予約済み":"下書き（添削待ち）";
+      if(made>0){
+        var where=((b&&b.mode)==="auto")?"予約済み":"下書き（添削待ち）";
         msg(made+"本を"+where+"に追加しました（1日分）。");
         loadScheduled(); refreshBadges();
-      } else if(r.body&&r.body.at_cap){ msg(r.body.error||"予約の在庫が上限です。",false); }
-      else { msg((r.body&&r.body.error)||"生成に失敗しました。",false); }
+      } else if(b&&b.at_cap){ msg(b.error||"予約の在庫が上限です。",false); }
+      else { msg((b&&b.error)||"生成に失敗しました。",false); }
     });
   }
 

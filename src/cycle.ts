@@ -58,6 +58,9 @@ function interleaveByHook<T extends { hook?: string }>(drafts: T[], seedHooks: s
 
 // 学習フェーズ：データが浅いうちは「テスト期」＝幅広く色々な型を探索、溜まったら「微調整期」＝勝ち型を磨く。
 const TUNE_MIN_SAMPLE = 20;
+// 型の重み補正（微調整期）を効かせるのに必要な、その型の実測本数。これ未満は中立(1.0)＝1本のマグレで
+// 採用率が2.5倍動くのを防ぐ（②の修正。自動不採用の AUTO_DEMOTE_MIN_N=5 と同趣旨のガード）。
+const MIN_AFFINITY_N = 3;
 async function learnPhase(env: Env, accountId: string): Promise<"test" | "tune"> {
   try {
     const r = await env.DB.prepare(
@@ -125,7 +128,7 @@ function aggregate(
 interface SettledRow {
   hook: string | null;
   posted_at: string;
-  er_norm: number;
+  er_raw: number;
   chars: number | null;
   is_thread: number;
 }
@@ -137,10 +140,10 @@ async function learnForAccount(env: Env, account: Account): Promise<boolean> {
   const rows = await env.DB.prepare(
     `SELECT p.hook AS hook, p.posted_at AS posted_at, p.chars AS chars,
             CASE WHEN p.reply_text IS NOT NULL AND trim(p.reply_text) <> '' THEN 1 ELSE 0 END AS is_thread,
-            m.er_norm AS er_norm
+            m.er_raw AS er_raw
        FROM posts p
        JOIN post_metrics m ON m.post_id = p.id
-      WHERE p.account_id = ? AND m.settled = 1 AND m.er_norm IS NOT NULL
+      WHERE p.account_id = ? AND m.settled = 1 AND m.er_raw IS NOT NULL
         AND m.fetched_at = (
           SELECT MAX(m2.fetched_at) FROM post_metrics m2
            WHERE m2.post_id = p.id AND m2.settled = 1
@@ -151,11 +154,18 @@ async function learnForAccount(env: Env, account: Account): Promise<boolean> {
 
   if (rows.results.length < MIN_LEARN_SAMPLE) return false;
 
+  // 平常比(er_norm)は「このアカウント自身の確定済みERの中央値」を分母に、その場で計算し直す（①③の根治）。
+  // ・収集時の日次バッチ基準に依存しない＝古い保存値のブレを引きずらない（移行不要で全会員に効く）。
+  // ・反応ゼロの投稿も er_raw=0 → 平常比0 として「効かなかった正しい低スコア」で学習に入る（③）。
+  const learnBase = median(rows.results.map((r) => r.er_raw).filter((v) => v > 0));
+  if (!(learnBase > 0)) return false; // 正の反応が一つも無い＝正規化できない（次サイクルへ持ち越し）
+  const norm = (erRaw: number) => erRaw / learnBase;
+
   // フック型ごとの効き
   const hookStats = aggregate(
     rows.results
       .filter((r) => r.hook)
-      .map((r) => ({ key: r.hook as string, er: r.er_norm }))
+      .map((r) => ({ key: r.hook as string, er: norm(r.er_raw) }))
   );
 
   // 投稿時間帯（JST時）ごとの効き
@@ -163,7 +173,7 @@ async function learnForAccount(env: Env, account: Account): Promise<boolean> {
     rows.results.map((r) => {
       const utcHour = new Date(parseSqlUtc(r.posted_at)).getUTCHours();
       const jstHour = (utcHour + 9) % 24;
-      return { key: String(jstHour), er: r.er_norm };
+      return { key: String(jstHour), er: norm(r.er_raw) };
     })
   );
 
@@ -175,8 +185,8 @@ async function learnForAccount(env: Env, account: Account): Promise<boolean> {
   };
   const longE: number[] = [], shortE: number[] = [], thrE: number[] = [], sglE: number[] = [];
   for (const r of rows.results) {
-    ((r.chars ?? 0) > 280 ? longE : shortE).push(r.er_norm);
-    (r.is_thread ? thrE : sglE).push(r.er_norm);
+    ((r.chars ?? 0) > 280 ? longE : shortE).push(norm(r.er_raw));
+    (r.is_thread ? thrE : sglE).push(norm(r.er_raw));
   }
   const lengthPref = pref(longE, shortE, "長文", "短文");
   const formatPref = pref(thrE, sglE, "連結", "単発");
@@ -457,13 +467,13 @@ async function loadActivePortfolio(env: Env, acc: string): Promise<Record<string
 }
 
 // 型別の学習パフォーマンス（平常比の中央値）と、微調整フェーズか（実測20本以上）を読む。
-async function loadHookPerf(env: Env, acc: string): Promise<{ affinity: Record<string, number>; tune: boolean }> {
-  const affinity: Record<string, number> = {}; let n = 0;
+async function loadHookPerf(env: Env, acc: string): Promise<{ affinity: Record<string, { median: number; n: number }>; tune: boolean }> {
+  const affinity: Record<string, { median: number; n: number }> = {}; let n = 0;
   try {
     const rows = await env.DB.prepare(`SELECT key, value_json AS v FROM individual_profile WHERE account_id = ? AND key IN ('hook_affinity','sample_size')`).bind(acc).all<{ key: string; v: string }>();
     for (const r of rows.results ?? []) {
       try {
-        if (r.key === "hook_affinity") { const arr = JSON.parse(r.v); if (Array.isArray(arr)) for (const x of arr) if (x && x.key) affinity[x.key] = x.median; }
+        if (r.key === "hook_affinity") { const arr = JSON.parse(r.v); if (Array.isArray(arr)) for (const x of arr) if (x && x.key) affinity[x.key] = { median: x.median, n: x.n ?? 0 }; }
         else if (r.key === "sample_size") { n = JSON.parse(r.v).n ?? 0; }
       } catch { /* 空 */ }
     }
@@ -503,7 +513,8 @@ async function genOmakase(env: Env, account: Account, count: number, guide: stri
   const { affinity, tune } = await loadHookPerf(env, account.id);
   const PW: Record<string, number> = { more: 3, normal: 2, less: 1 };
   const fullKey = (hook: string, p: string) => (hook.indexOf("⭐") === 0 ? hook : `${hook}##${p}`);
-  const perfFactor = (key: string) => { if (!tune) return 1; const a = affinity[key]; if (a === undefined) return 1; return a >= 1.1 ? 1.5 : a < 0.9 ? 0.6 : 1.0; };
+  // ② 微調整期でも、その型の実測が MIN_AFFINITY_N 本未満なら中立(1.0)＝1本のマグレ/事故で採用率が2.5倍動かない。
+  const perfFactor = (key: string) => { if (!tune) return 1; const a = affinity[key]; if (!a || a.n < MIN_AFFINITY_N) return 1; return a.median >= 1.1 ? 1.5 : a.median < 0.9 ? 0.6 : 1.0; };
   const hookW = (h: HookEntry, p: string) => (PW[h.priority] || 2) * perfFactor(fullKey(h.hook, p));
   const pweight = patterns.map((p) => byPattern[p].hooks.reduce((s, h) => s + hookW(h, p), 0) || 1);
   const alloc = allocateByWeight(count, pweight);
@@ -544,7 +555,7 @@ function stockCountSql(approvalMode: string): string {
 }
 // dayspan>0＝手動「1日分追加」（在庫上限まで・1日分）。dayspan=0＝通常サイクル（在庫上限まで・1日分）。
 // src＝挿入する source。'tool'＝自動生成（サイクル切替で作り直し対象）。'manual'＝手動生成（会員操作＝作り直しで消さない）。
-async function replenishForAccount(env: Env, account: Account, dayspan = 0, src: "tool" | "manual" = "tool"): Promise<number> {
+async function replenishForAccount(env: Env, account: Account, dayspan = 0, src: "tool" | "manual" = "tool", limitN = 0): Promise<number> {
   const perDay = Math.max(account.daily_frequency, 1);
   const target = inventoryCap(account);
   const q = await env.DB.prepare(stockCountSql(account.approval_mode))
@@ -559,6 +570,9 @@ async function replenishForAccount(env: Env, account: Account, dayspan = 0, src:
     need = Math.min(target - have, perDay); // 通常サイクル：1日分まで
   }
   if (need <= 0) return 0;
+  // limitN>0＝1リクエスト内の生成本数を絞る（会員ワーカーは無料プラン＝1リクエストに長い生成を
+  // 詰めるとCloudflareの実行制限で落ちるため、画面側が1本ずつ複数リクエストに分けて呼ぶ）。
+  if (limitN > 0) need = Math.min(need, limitN);
   const status = account.approval_mode === "auto" ? "queued" : "pending";
 
   // URL誘導は「自動承認モード」かつ「飛ばし先URLが登録済み」のときだけ自動で1本混ぜる。
@@ -756,15 +770,15 @@ export async function cancelQueuedForAccount(env: Env, accountId: string): Promi
 
 // 手動「1日分を追加」：1回1日分だけ即時生成（在庫上限まで）。source=manual＝サイクル切替の作り直しで消えない。
 //   在庫が上限なら at_cap を返してUIでエラー表示。daysは無視（常に1日分）。
-export async function generateDaysForAccount(env: Env, accountId: string, _days?: number): Promise<{ generated: number; mode: "auto" | "manual"; at_cap?: boolean; cap?: number; have?: number }> {
+export async function generateDaysForAccount(env: Env, accountId: string, _days?: number, limitN = 0): Promise<{ generated: number; mode: "auto" | "manual"; at_cap?: boolean; cap?: number; have?: number; per_day?: number; room?: number }> {
   const acc = await loadAccount(env, accountId);
   if (!acc) return { generated: 0, mode: "manual" };
   const mode = acc.approval_mode === "auto" ? "auto" : "manual";
   const cap = inventoryCap(acc);
   const have = (await env.DB.prepare(stockCountSql(acc.approval_mode)).bind(accountId).first<{ n: number }>())?.n ?? 0;
-  if (have >= cap) return { generated: 0, mode, at_cap: true, cap, have };
-  const generated = await replenishForAccount(env, acc, 1, "manual"); // 1日分・上限まで
-  return { generated, mode, cap, have: have + generated };
+  if (have >= cap) return { generated: 0, mode, at_cap: true, cap, have, per_day: acc.daily_frequency, room: 0 };
+  const generated = await replenishForAccount(env, acc, 1, "manual", limitN); // 1日分・上限まで（limitN>0なら本数を絞る）
+  return { generated, mode, cap, have: have + generated, per_day: acc.daily_frequency, room: Math.max(0, cap - have) };
 }
 
 export async function runCycle(
