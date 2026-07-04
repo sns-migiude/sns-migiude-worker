@@ -1,7 +1,8 @@
 name: Sync with upstream
 on:
   schedule:
-    - cron: "0 18 * * *"   # 毎日およそ 03:00 JST に同期
+    # 1日3回・JST 03:37 / 11:37 / 19:37（毎時0分は混雑して遅れるので37分に散らす）
+    - cron: "37 2,10,18 * * *"
   workflow_dispatch: {}     # 「Run workflow」で今すぐ同期も可能
 permissions:
   contents: write
@@ -16,7 +17,7 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Mirror upstream main (keep own workflows)
+      - name: Mirror upstream main (keep own workflows, skip if unchanged)
         run: |
           git config user.name "sns-migiude-sync"
           git config user.email "sync@users.noreply.github.com"
@@ -29,5 +30,11 @@ jobs:
           git rm -r -q --ignore-unmatch .github/workflows
           git checkout "$KEEP" -- .github/workflows
           git add -A
-          git commit -m "sync: mirror upstream (keep own workflows)" || true
-          git push origin main --force
+          # 上流に変更が無ければ push しない＝無駄な再ビルドを起こさない（1日3回でも実ビルドは更新時だけ）
+          if git diff --cached --quiet "$KEEP"; then
+            echo "上流に更新なし。ビルドは起こさない。"
+            git reset --hard "$KEEP"
+          else
+            git commit -m "sync: mirror upstream (keep own workflows)"
+            git push origin main --force
+          fi
