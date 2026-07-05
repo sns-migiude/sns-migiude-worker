@@ -3383,9 +3383,15 @@ export const DASHBOARD_HTML = `<!doctype html>
   function loadNetaList(){
     api("GET","/api/neta/list?account="+ACC).then(function(r){
       var files=(r.body&&r.body.files)||[];
-      $("netaList").innerHTML = files.length ? files.map(function(f){
+      var head="";
+      if(files.length){
+        var kb=0; for(var i=0;i<files.length;i++) kb+=Math.round((files[i].bytes||0)/1024);
+        var sizeStr = kb>=1024 ? ((kb/1024).toFixed(1)+"MB") : (kb+"KB");
+        head="<div class='row' style='justify-content:space-between;align-items:center;margin-bottom:6px'><b>アップロード済み "+files.length+" / 200 件</b><span class='note'>合計 "+sizeStr+"</span></div>";
+      }
+      $("netaList").innerHTML = head + (files.length ? files.map(function(f){
         return "<div class='netaItem'><span>📄 "+esc(f.filename)+"　<span class='note'>"+Math.round((f.bytes||0)/1024)+"KB</span></span><button class='soft' onclick='delNeta("+f.id+")'>削除</button></div>";
-      }).join("") : "<div class='note'>まだアップロードされていません。</div>";
+      }).join("") : "<div class='note'>まだアップロードされていません。</div>");
     });
   }
   function uploadNeta(){
