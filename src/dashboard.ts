@@ -370,7 +370,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 
         <div class="card">
           <label style="margin:0;font-size:15px;color:var(--text)">② ポストのネタ元データをアップロードする</label>
-          <div class="note" style="margin:4px 0 10px">あなたが過去に書いた記事・セールスレター・メルマガ・YouTube台本・書き起こしなどを <b>txt / md ファイル</b> 形式でアップロードすると、AIがその内容の素材にしてポストを自動生成します。1ファイル最大500KB・最大50件までアップロード可能。</div>
+          <div class="note" style="margin:4px 0 10px">あなたが過去に書いた記事・セールスレター・メルマガ・YouTube台本・書き起こしなどを <b>txt / md ファイル</b> 形式でアップロードすると、AIがその内容の素材にしてポストを自動生成します。1ファイル最大500KB・最大200件までアップロード可能。素材が多いほど、投稿の話題が広がってネタ被りが減ります。</div>
           <input id="netaFile" type="file" accept=".txt,.md,text/plain,text/markdown" multiple onchange="uploadNeta()">
           <div id="netaState" class="note" style="margin-top:6px"></div>
           <div id="netaList" style="margin-top:8px"></div>
@@ -3292,16 +3292,20 @@ export const DASHBOARD_HTML = `<!doctype html>
   // 1日分を「1本ずつ」生成する（1リクエスト=1本。無料プランのCloudflare実行制限を超えないため）。
   // onStep(次に作る番号, 全体数)で進捗を通知し、cbFinal(作れた本数, 最後の応答body)で終わる。
   function genOneLoop(onStep, cbFinal){
-    var made=0, total=null, last=null;
+    var made=0, total=null, last=null, empties=0;
     function step(){
       if(onStep) onStep(made+1, total);
       api("POST","/api/account/generate-days",{account:ACC, one:true}).then(function(r){
         var b=(r&&r.body)||{};
         last=b;
-        if(b.ok){
+        if(b.ok && !b.at_cap){
           if(total==null) total=Math.max(1, Math.min(b.day_total||1, 20));
           made+=(b.generated||0);
-          if((b.generated||0)>0 && made<total){ loadScheduled(); refreshBadges(); step(); return; }
+          if(made<total){
+            if((b.generated||0)>0){ empties=0; loadScheduled(); refreshBadges(); step(); return; }
+            // その回が0本でも即あきらめない：1本ずつ生成はフィルタ/重複で稀に0本になるため、数回は粘る。
+            if(empties<3){ empties++; step(); return; }
+          }
         }
         cbFinal(made, last);
       });

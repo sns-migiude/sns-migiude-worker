@@ -67,7 +67,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.21";
+const CODE_VERSION = "1.23";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -2860,7 +2860,7 @@ export default {
         .all();
       return json({ account, corpus: rows.results });
     }
-    // ネタ元データのアップロード（txt/md。1ファイル最大500KB・最大50件）
+    // ネタ元データのアップロード（txt/md。1ファイル最大500KB・最大200件）
     if (req.method === "POST" && url.pathname === "/api/neta/upload") {
       const b = (await req.json().catch(() => null)) as { account?: string; filename?: string; content?: string } | null;
       if (!b?.account) return json({ error: "account は必須" }, 400);
@@ -2872,10 +2872,12 @@ export default {
       const cnt = await env.DB.prepare(
         `SELECT COUNT(*) AS n FROM neta_files WHERE account_id = ?`
       ).bind(b.account).first<{ n: number }>();
-      if ((cnt?.n ?? 0) >= 50) return json({ error: "ネタ元データは最大50件までです（不要なものを削除してください）" }, 400);
+      if ((cnt?.n ?? 0) >= 200) return json({ error: "ネタ元データは最大200件までです（不要なものを削除してください）" }, 400);
       await env.DB.prepare(
         `INSERT INTO neta_files (account_id, filename, content, bytes) VALUES (?, ?, ?, ?)`
       ).bind(b.account, filename, content, bytes).run();
+      // 素材が変わったら、AI抽出のネタ原石(gems)を作り直す（次の生成時に新素材から再抽出）。手動登録のgemsは残す。
+      await env.DB.prepare(`DELETE FROM gems WHERE account_id = ? AND ai_generated = 1`).bind(b.account).run().catch(() => {});
       return json({ ok: true, filename, bytes });
     }
     // ネタ元データ一覧（中身は返さずファイル名とサイズだけ）
@@ -2892,6 +2894,7 @@ export default {
       const b = (await req.json().catch(() => null)) as { account?: string; id?: number } | null;
       if (!b?.account || !b?.id) return json({ error: "account と id が必要" }, 400);
       await env.DB.prepare(`DELETE FROM neta_files WHERE id = ? AND account_id = ?`).bind(b.id, b.account).run();
+      await env.DB.prepare(`DELETE FROM gems WHERE account_id = ? AND ai_generated = 1`).bind(b.account).run().catch(() => {}); // 素材削除→ネタ原石を作り直す
       return json({ ok: true, deleted: b.id });
     }
     // メトリクス＋リプ収集を手動で1回（テスト用）

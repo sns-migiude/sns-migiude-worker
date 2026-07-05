@@ -51,15 +51,79 @@ async function loadCorpus(env: Env, accountId: string): Promise<Record<string, s
   return map;
 }
 
-// ネタ原石を未使用優先で選ぶ（カテゴリ循環の簡易版）
-async function pickGems(env: Env, accountId: string, n: number): Promise<string[]> {
+// ネタ原石を未使用優先で選ぶ（カテゴリ循環の簡易版）。idも返す＝使用後に used_count を回すため。
+async function pickGems(env: Env, accountId: string, n: number): Promise<Array<{ id: string; content: string }>> {
   const rows = await env.DB.prepare(
-    `SELECT content FROM gems WHERE account_id = ?
+    `SELECT id, content FROM gems WHERE account_id = ?
      ORDER BY used_count ASC, last_used_at ASC NULLS FIRST LIMIT ?`
   )
     .bind(accountId, n)
-    .all<{ content: string }>();
-  return rows.results.map((r) => r.content);
+    .all<{ id: string; content: string }>();
+  return rows.results ?? [];
+}
+
+// 使ったネタ原石の used_count を回す（次回は別の種が未使用優先で surface する＝話題を機械的にローテーション）。
+async function markGemsUsed(env: Env, accountId: string, ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  const ph = ids.map(() => "?").join(",");
+  await env.DB.prepare(
+    `UPDATE gems SET used_count = used_count + 1, last_used_at = datetime('now') WHERE account_id = ? AND id IN (${ph})`
+  ).bind(accountId, ...ids).run().catch(() => {});
+}
+
+// ネタ原石の自動配線：gemsが空でネタ元素材(neta_files)がある会員に、素材をAI(Haiku)で
+// 「話題の種」に分解して gems に投入する（1会員1回。以後はローテーションが回る）。素材が無い/失敗時は何もしない。
+// これが無いと gems は常に空＝話題ローテーションが効かず、モデルが同じ題材を言い換えて“ネタ被り”になる。
+async function ensureGems(env: Env, accountId: string, claudeKey: string): Promise<void> {
+  try {
+    const cnt = await env.DB.prepare(`SELECT COUNT(*) AS n FROM gems WHERE account_id = ?`).bind(accountId).first<{ n: number }>();
+    if ((cnt?.n ?? 0) > 0) return; // 既に配線済み
+    const nrows = await env.DB.prepare(
+      `SELECT content FROM neta_files WHERE account_id = ? ORDER BY created_at DESC`
+    ).bind(accountId).all<{ content: string }>();
+    // 種の抽出は「素材全体」から広く拾う（生成プロンプトの生素材は別途18000字キャップだが、種はコンパクトなので
+    // 素材全体を対象にできる＝素材を増やすほど話題が増えてネタ被りが減る）。総量上限は GEMS_MATERIAL_CAP。
+    const GEMS_MATERIAL_CAP = 90000; // 抽出に使う素材の総量上限（Haiku代を読める範囲に）
+    const CHUNK = 30000;             // 1回のHaikuに渡す素材量（3チャンクまで）
+    let material = "";
+    for (const r of nrows.results ?? []) { material += (material ? "\n\n---\n\n" : "") + (r.content ?? ""); if (material.length > GEMS_MATERIAL_CAP) break; }
+    material = material.slice(0, GEMS_MATERIAL_CAP).trim();
+    if (!material) return; // 素材が無ければ配線しない（従来どおりテーマから自由生成）
+    const seeds: string[] = [];
+    for (let off = 0; off < material.length; off += CHUNK) {
+      const chunk = material.slice(off, off + CHUNK);
+      if (!chunk.trim()) continue;
+      try {
+        const { text, usage } = await callClaude({
+          apiKey: claudeKey,
+          model: "claude-haiku-4-5", // 抽出は安いHaiku（effort/思考オフ）
+          noEffort: true, thinkingMode: "disabled", maxTokens: 4000, stream: false,
+          system: [{
+            text:
+              "あなたは、与えられた素材から『投稿1本になりうる“話題の種”』を、できるだけ多く・重複なく列挙する専門家。" +
+              "1つの種＝1つの具体的な題材/主張/エピソード/切り口（例：ある失敗談・ある数字・ある反論・ある比較・ある問い）。" +
+              "抽象的なテーマ名ではなく、書き出しの取っ掛かりになる具体で。40〜80個。中身は素材の範囲から拾い、事実の捏造はしない。" +
+              'JSON配列だけを返す（前置き・説明・コードフェンス無し）：["種1","種2",...]',
+          }],
+          userText: chunk,
+        });
+        await logClaudeUsage(env, accountId, "claude-haiku-4-5", usage, "gems_extract");
+        const a = extractJson<string[]>(text);
+        if (Array.isArray(a)) for (const s of a) if (typeof s === "string" && s.trim()) seeds.push(s.trim().slice(0, 200));
+      } catch { /* このチャンクはスキップ */ }
+    }
+    // 重複を軽く除去して最大200個まで
+    const seen = new Set<string>(); const uniq: string[] = [];
+    for (const s of seeds) { const k = s.replace(/\s+/g, ""); if (!seen.has(k)) { seen.add(k); uniq.push(s); } if (uniq.length >= 200) break; }
+    if (!uniq.length) return;
+    for (let i = 0; i < uniq.length; i++) {
+      const id = "A" + String(i + 1).padStart(3, "0");
+      await env.DB.prepare(
+        `INSERT INTO gems (account_id, id, category, content, source, ai_generated) VALUES (?, ?, 'auto', ?, 'neta', 1)
+         ON CONFLICT(account_id, id) DO NOTHING`
+      ).bind(accountId, id, uniq[i]).run().catch(() => {});
+    }
+  } catch { /* 抽出失敗でも生成は止めない */ }
 }
 
 // 添削の差分（before→after）と★評価を読み込んで、生成の指針にする。
@@ -148,7 +212,11 @@ export async function generateDrafts(
   const voiceEdits = corpus.voice_edits ?? "";     // 添削ぶん（会員が手直し承認した文章）
   const winning = corpus.winning_patterns ?? "";
   const direction = corpus.direction ?? ""; // 発信の方向性（何を・誰に・どんなスタンスで）
-  const gems = await pickGems(env, account.id, Math.max(count * 2, 6));
+  await ensureGems(env, account.id, claudeKey); // 素材から話題の種を配線（空の会員のみ・1回）＝ネタ被り対策の要
+  // 1本あたり少なめに絞って回す（種を早く食い潰さない）。使った種は used_count を回して次回は別の種を出す。
+  const gemPicks = await pickGems(env, account.id, Math.max(count + 2, 4));
+  const gems = gemPicks.map((g) => g.content);
+  await markGemsUsed(env, account.id, gemPicks.map((g) => g.id));
   const recent = await loadRecentBodies(env, account.id, 20, 250); // 直近20日（最大250件）＝ネタ被り厳禁の対象
   // 型トレーニングの既出サンプルはpostsに保存されないので、明示で渡された本文を被り対象に合流（先頭＝最優先で避ける）
   if (avoidBodies && avoidBodies.length) {
@@ -348,7 +416,7 @@ export async function generateDrafts(
   // 1ラウンド分の生成。system（重い文脈）は使い回す＝プロンプトキャッシュが効く。床チェックまでして返す。
   async function runRound(n: number, longNForRound: number): Promise<GeneratedDraft[]> {
     const userText =
-      `# ネタ候補\n${gems.length ? gems.join("\n") : "（ネタプール未登録。会員のテーマに沿って書く）"}\n\n` +
+      `# 今回の題材（この中から選んで書く。毎回ちがう種が出るので、下の「直近ポスト」と題材が被らないものを優先）\n${gems.length ? gems.map((g) => "・" + g).join("\n") : "（ネタプール未登録。会員のテーマに沿って書く）"}\n\n` +
       `# 指示\n${instructions ?? "ネタからバランスよく選び、この会員の文体で書く。"}\n\n` +
       threadRule + singleRule +
       `# 制約\n${longNForRound > 0 ? n + "本のうち、ちょうど" + longNForRound + "本は必ず日本語" + LONG_MIN + "字以上の長文にする（理想300字前後・最大" + charMax + "字。改行で段落を作り、体験→深掘り→気づき等で展開。" + LONG_MIN + "字を必ず超えること）。残り" + (n - longNForRound) + "本は140字以内の短文。※文体・語彙はサンプル準拠だが、長文では短くまとめず十分に展開する（サンプルが短いからと縮めない）。" : "本文(body)は必ず日本語140文字以内に収める。"}（英数字は2文字で1カウント）\n\n` +
