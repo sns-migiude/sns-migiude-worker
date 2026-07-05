@@ -9,7 +9,7 @@ import { generateDrafts } from "./generate";
 import { loadActiveAccounts, loadAccount, resolveCreds, linkCode, tagUrl, trackedLink, randCode, getPublicUrl, type Account, type Env } from "./accounts";
 import { weightedLength } from "./xapi";
 import { nextQueueSlot } from "./schedule";
-import { TYPE_INSTRUCTIONS, CATALOG_KEYS, DEFAULT_ON, DEFAULT_ON_FREE, isLongType, PATTERNS, metaOf, URL_TYPE_INSTRUCTION, URL_STYLES } from "./taxonomy";
+import { TYPE_INSTRUCTIONS, CATALOG_KEYS, DEFAULT_ON, DEFAULT_ON_FREE, isLongType, PATTERNS, metaOf, URL_TYPE_INSTRUCTION, URL_STYLES, type PolicyId } from "./taxonomy";
 import { callClaude } from "./claude";
 import { logClaudeUsage } from "./usage";
 import { ensurePromotedColumns } from "./collect";
@@ -21,11 +21,13 @@ const MIN_LEARN_SAMPLE = 10;
 const THREAD_FOCUS_INSTRUCTION =
   "2つの連続ポストに分ける。1本目(body)で引き付ける一言を作り、2本目(reply_text)で本編・オチ・答えを出す。1本目は短く引きで終え、答えは2本目に書く。";
 
-// サイクルのフォーカス（改善カード）を読む。未設定なら null＝自動。
+// サイクルのフォーカス（次の学習サイクルの指針）を読む。未設定なら null＝自動。
+// PolicyId＝グループ単位の方針（taxonomy.ts POLICY_CATALOG）。1サイクル限定＝runCycleForAccountの
+// サイクル切替時に自動で消す（②の修正：選びっぱなしで永久に固定されるのを防ぐ）。
 async function loadFocus(
   env: Env,
   accountId: string
-): Promise<{ dim: string; value: string; label?: string } | null> {
+): Promise<{ policy: PolicyId; label?: string } | null> {
   try {
     const r = await env.DB.prepare(
       `SELECT value_json AS v FROM individual_profile WHERE account_id = ? AND key = 'cycle_focus'`
@@ -34,10 +36,13 @@ async function loadFocus(
       .first<{ v: string }>();
     if (!r?.v) return null;
     const f = JSON.parse(r.v);
-    return f && typeof f.dim === "string" && typeof f.value === "string" ? f : null;
+    return f && typeof f.policy === "string" ? f : null;
   } catch {
     return null;
   }
+}
+async function clearFocus(env: Env, accountId: string): Promise<void> {
+  await env.DB.prepare(`DELETE FROM individual_profile WHERE account_id = ? AND key = 'cycle_focus'`).bind(accountId).run().catch(() => {});
 }
 
 // 型被り防止：同じ型(hook)が直近3つ以内に出ないよう貪欲に並べ替える（間に3つ以上挟む）。
@@ -566,13 +571,61 @@ async function genOmakase(env: Env, account: Account, count: number, guide: stri
   const patterns = Object.keys(byPattern).filter((p) => p !== "url");
   if (!patterns.length) return (await generateDrafts(env, account, count, guide, undefined, seedAvoid)) as Array<{ body: string; hook: string; reply_text?: string }>;
   const { affinity, promo, basis, tune } = await loadHookPerf(env, account.id);
+  const focus = await loadFocus(env, account.id); // 「次の学習サイクルの指針」（1サイクル限定・グループ単位）
   const PW: Record<string, number> = { more: 3, normal: 2, less: 1 };
   const fullKey = (hook: string, p: string) => (hook.indexOf("⭐") === 0 ? hook : `${hook}##${p}`);
   // ② 微調整期でも、その型の実測が MIN_AFFINITY_N 本未満なら中立(1.0)＝1本のマグレ/事故で採用率が2.5倍動かない。
   // 学習基準トグル：オーガニック優先(既定)＝オーガニック0.6+広告0.4／広告優先＝広告0.6+オーガニック0.4。
   const perfFactor = (key: string) => { if (!tune) return 1; const b = blendAffinity(affinity[key], promo[key], basis); if (!b) return 1; return b.median >= 1.1 ? 1.5 : b.median < 0.9 ? 0.6 : 1.0; };
-  const hookW = (h: HookEntry, p: string) => (PW[h.priority] || 2) * perfFactor(fullKey(h.hook, p));
-  const pweight = patterns.map((p) => byPattern[p].hooks.reduce((s, h) => s + hookW(h, p), 0) || 1);
+
+  // 方針タイル：投稿数・平均インプは、それを使う方針が選ばれている時だけ取得（無駄なDB負荷を避ける）。
+  let postCounts: Record<string, number> | null = null;
+  let impAvgByHook: Record<string, number> | null = null;
+  let impMedian = 0;
+  if (focus && (focus.policy === "hook_explore" || focus.policy === "hook_diversify")) {
+    const pc = await env.DB.prepare(`SELECT hook, COUNT(*) AS n FROM posts WHERE account_id = ? AND status = 'posted' AND hook IS NOT NULL GROUP BY hook`).bind(account.id).all<{ hook: string; n: number }>().catch(() => ({ results: [] as Array<{ hook: string; n: number }> }));
+    postCounts = {}; for (const r of pc.results ?? []) postCounts[r.hook] = r.n;
+  }
+  if (focus && focus.policy === "reach_impressions") {
+    const ir = await env.DB.prepare(
+      `SELECT p.hook AS hook, AVG(m.impressions) AS avgImp FROM posts p JOIN post_metrics m ON m.post_id = p.id
+        WHERE p.account_id = ? AND m.settled = 1 AND m.impressions IS NOT NULL AND p.hook IS NOT NULL GROUP BY p.hook`
+    ).bind(account.id).all<{ hook: string; avgImp: number }>().catch(() => ({ results: [] as Array<{ hook: string; avgImp: number }> }));
+    impAvgByHook = {}; for (const r of ir.results ?? []) impAvgByHook[r.hook] = r.avgImp;
+    const vals = Object.values(impAvgByHook).sort((a, b) => a - b);
+    impMedian = vals.length ? vals[Math.floor(vals.length / 2)] : 0;
+  }
+  // 方針によるグループ単位の重み補正（単一の狭い型を名指しでロックしない＝複数の型/パターンにまたがる）。
+  // 倍率は控えめ(最大1.8倍/最小0.4倍)：allocateByWeightは当選ごとに重みを0.45倍するため、
+  // 強い倍率でも「その型だけになる」ことはなく、対象グループ内で分散して選ばれる。
+  const policyHookMult = (hook: string, p: string): number => {
+    if (!focus) return 1;
+    switch (focus.policy) {
+      case "hook_top": { const b = blendAffinity(affinity[fullKey(hook, p)], promo[fullKey(hook, p)], basis); return b && b.median >= 1.1 ? 1.8 : 1; }
+      case "hook_explore": { const n = postCounts?.[hook] ?? 0; return n === 0 ? 2.2 : n < 3 ? 1.5 : 1; }
+      case "hook_diversify": { const n = postCounts?.[hook] ?? 0; return 1 / Math.sqrt(n + 1); } // 使用が多いほど下げ、少ないほど上げる
+      case "hook_weak_down": { const b = blendAffinity(affinity[fullKey(hook, p)], promo[fullKey(hook, p)], basis); return b && b.median < 0.9 ? 0.4 : 1; }
+      case "reach_impressions": { if (!impAvgByHook || !(impMedian > 0)) return 1; const v = impAvgByHook[hook]; if (v == null) return 1; return v >= impMedian * 1.1 ? 1.8 : v < impMedian * 0.9 ? 0.6 : 1; }
+      case "promo_effective": { const pr = promo[fullKey(hook, p)]; return pr && pr.n >= MIN_AFFINITY_N && pr.median >= 1.1 ? 1.8 : 1; }
+      case "custom_types": return hook.indexOf("⭐") === 0 ? 1.8 : 1;
+      default: return 1; // length/format/image/engagement_rateはパターン単位（policyPatternMult）で効く
+    }
+  };
+  const policyPatternMult = (p: string): number => {
+    if (!focus) return 1;
+    const pat = PATTERNS[p]; if (!pat) return 1;
+    switch (focus.policy) {
+      case "length_long": return pat.long ? 1.8 : 0.7;
+      case "length_short": return !pat.long ? 1.8 : 0.7;
+      case "format_thread": return pat.kind === "thread" ? 1.8 : 0.7;
+      case "format_single": return pat.kind === "single" ? 1.8 : 0.7;
+      case "image_on": return pat.image ? 1.8 : 0.7;
+      case "image_off": return !pat.image ? 1.8 : 0.7;
+      default: return 1;
+    }
+  };
+  const hookW = (h: HookEntry, p: string) => (PW[h.priority] || 2) * perfFactor(fullKey(h.hook, p)) * policyHookMult(h.hook, p);
+  const pweight = patterns.map((p) => (byPattern[p].hooks.reduce((s, h) => s + hookW(h, p), 0) || 1) * policyPatternMult(p));
   const alloc = allocateByWeight(count, pweight);
   const out: Array<{ body: string; hook: string; reply_text?: string }> = [];
   for (let pi = 0; pi < patterns.length; pi++) {
@@ -589,6 +642,7 @@ async function genOmakase(env: Env, account: Account, count: number, guide: stri
     if (less.length) freq += "・控えめにする型（少なめ）：" + less.join("｜") + "\n";
     if (strong.length) freq += "・最近よく効いている型（増やす）：" + strong.join("｜") + "\n";
     if (weak.length) freq += "・最近伸び悩む型（減らす）：" + weak.join("｜") + "\n";
+    if (focus?.label) freq += "・今回の方針：" + focus.label + "（該当の型・形式を意識して多めに）\n";
     const customGuide = (g.custom.length ? "## 採用中の自作の型（これらも使ってよい・hookは⭐名前で）\n" + g.custom.map((c) => "・" + c.hook + "：" + c.prompt).join("\n") + "\n\n" : "") + freq;
     // この生成回で既に作ったぶん（＋呼び出し元のseed）も「被り回避」に渡す＝同回内のネタ被りを防ぐ。
     const avoid = [...seedAvoid, ...out.map((d) => d.body)].filter(Boolean);
@@ -644,27 +698,16 @@ async function replenishForAccount(env: Env, account: Account, dayspan = 0, src:
   }
 
   const normalNeed = need - urlToMake;
-  // フォーカス（改善カード）が設定されていれば、約75%をそこに寄せ、残り25%は探索(おまかせ)。
-  const focus = await loadFocus(env, account.id);
   const drafts: Array<{ body: string; hook: string; reply_text?: string; link_code?: string }> = [];
   if (normalNeed > 0) {
     const base = "ネタからバランスよく選び、この会員の文体で書く。";
-    if (focus && focus.dim === "hook") {
-      // フォーカスが特定の型（型キー）：その切り口×パターンで多めに、残りは採用ポートフォリオから探索。
-      const focusN = Math.min(normalNeed, Math.max(1, Math.round(normalNeed * 0.75)));
-      const exploreN = normalNeed - focusN;
-      const m = metaOf(focus.value);
-      const fd = await generateDrafts(env, account, focusN, m.instruction || TYPE_INSTRUCTIONS[m.hook], undefined, undefined, m.pattern ? { pattern: m.pattern, hooks: [m.hook] } : undefined);
-      drafts.push(...fd);
-      if (exploreN > 0) drafts.push(...(await genOmakase(env, account, exploreN, base, fd.map((d) => d.body)))); // フォーカス分とも被らせない
-    } else {
-      // フォーカス未設定（or format/length）：学習フェーズで方針を変えつつ、採用ポートフォリオに沿って生成。
-      const phase = await learnPhase(env, account.id);
-      const guide = phase === "test"
-        ? `${base}\n今は「テスト期」：採用中の型から幅広く、まだ反応データが少ない型も積極的に試す（探索優先）。`
-        : `${base}\n今は「微調整期」：反応が良かった型を中心に、その型の“書き方の好み”を効かせて磨く（勝ち型を多めに・探索は2〜3割残す）。`;
-      drafts.push(...(await genOmakase(env, account, normalNeed, guide)));
-    }
+    // 学習フェーズで基本方針を変えつつ生成。「次の学習サイクルの指針」（cycle_focus）が設定されていれば、
+    // genOmakase内部でグループ単位の重み付けとして重ねて効く（単一の狭い型を名指しでロックしない・②の修正）。
+    const phase = await learnPhase(env, account.id);
+    const guide = phase === "test"
+      ? `${base}\n今は「テスト期」：採用中の型から幅広く、まだ反応データが少ない型も積極的に試す（探索優先）。`
+      : `${base}\n今は「微調整期」：反応が良かった型を中心に、その型の“書き方の好み”を効かせて磨く（勝ち型を多めに・探索は2〜3割残す）。`;
+    drafts.push(...(await genOmakase(env, account, normalNeed, guide)));
   }
   if (urlToMake > 0 && chosenLink) {
     // リンクタイトル・説明を渡して、1本目をその内容に沿った引きにする（飛び先はAIが読めないため）。
@@ -862,7 +905,8 @@ export async function runCycleForAccount(env: Env, acc: Account): Promise<{ lear
       await updateExecNotes(env, acc); // 型別の実行ノート（微調整）を更新。新しい添削があった型だけ
       // 未投稿の“自動生成”予約(source=tool)だけ破棄。会員が編集/手動生成した分(source=manual)・承認待ち(pending)は残す。
       await env.DB.prepare(`DELETE FROM posts WHERE account_id = ? AND status = 'queued' AND source = 'tool'`).bind(acc.id).run();
-      const generated = await replenishForAccount(env, acc); // 新しい学習で1日分（source=tool）
+      const generated = await replenishForAccount(env, acc); // 新しい学習で1日分（source=tool・設定中の指針があればここで反映）
+      await clearFocus(env, acc.id); // 「次の学習サイクルの指針」は1サイクル限定＝ここで消費して自動解除（②の修正）
       await stampCycle(env, acc.id, `cycle turn learned=${learned} regen=${generated}`);
       return { learned, generated };
     }

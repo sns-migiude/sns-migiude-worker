@@ -169,6 +169,35 @@ export function metaOf(key: string): { hook: string; pattern: string | null; kin
 //   このコード（公開する実行エンジン）には指示テキストを持たない＝資産を出さない（03/05章）。
 export let TYPE_INSTRUCTIONS: Record<string, string> = {};
 
+// 「次の学習サイクルの指針」の方針カタログ（2026-07-05）。
+// 1つの狭い型に75%固定していた旧cycle_focusは、選び続けると偏りが複利的に強まる問題があった（会員指摘）。
+// 対策：①必ず複数の型/パターンにまたがる“グループ単位”の方針にする（単一の狭い型を名指しでロックしない）
+//      ②サイクルが切り替わったら自動解除（cycle_focusに{policy,label}で保存し、cycle.tsのサイクル切替時に消す）。
+export type PolicyId =
+  | "hook_top" | "hook_explore" | "hook_diversify" | "hook_weak_down"
+  | "length_long" | "length_short" | "format_thread" | "format_single"
+  | "image_on" | "image_off"
+  | "reach_impressions" | "engagement_rate"
+  | "promo_effective" | "custom_types";
+export interface PolicyDef { id: PolicyId; category: string; label: string; requires?: "image" | "promo" | "custom" }
+export const POLICY_CATALOG: PolicyDef[] = [
+  { id: "hook_top", category: "型", label: "好調な型をまとめて増やす" },
+  { id: "hook_explore", category: "型", label: "まだ試していない型を試す" },
+  { id: "hook_diversify", category: "型", label: "型のバリエーションを増やす" },
+  { id: "hook_weak_down", category: "型", label: "伸び悩む型を減らす" },
+  { id: "length_long", category: "長さ・形式", label: "長文を増やす" },
+  { id: "length_short", category: "長さ・形式", label: "短文を増やす" },
+  { id: "format_thread", category: "長さ・形式", label: "連結（スレッド）を増やす" },
+  { id: "format_single", category: "長さ・形式", label: "単発を増やす" },
+  { id: "image_on", category: "画像", label: "画像つきを増やす", requires: "image" },
+  { id: "image_off", category: "画像", label: "画像なし（テキストのみ）を増やす", requires: "image" },
+  { id: "reach_impressions", category: "拡散・反応", label: "インプレッションが伸びる型を増やす（拡散重視）" },
+  { id: "engagement_rate", category: "拡散・反応", label: "反応率が高い型を増やす" },
+  { id: "promo_effective", category: "広告", label: "広告で効く型を増やす", requires: "promo" },
+  { id: "custom_types", category: "独自", label: "自作の型を増やす", requires: "custom" },
+];
+export const POLICY_BY_ID: Record<string, PolicyDef> = Object.fromEntries(POLICY_CATALOG.map((p) => [p.id, p]));
+
 // Hubから取得したプロンプトパックで、型指示・URL誘導の本体（運営資産）を反映する。生成・型・cron の前に呼ぶ。
 export function hydrateTaxonomy(pack: {
   type_instructions?: Record<string, string>;

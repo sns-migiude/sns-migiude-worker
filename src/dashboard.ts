@@ -2137,9 +2137,11 @@ export const DASHBOARD_HTML = `<!doctype html>
   }
   // 分析＆改善：反応データの集計・型別/時間帯別の成績・伸びたポスト・AIの学習を表示。
   function aTile(k,n){ return "<div class='tile'><div class='n'>"+n+"</div><div class='k'>"+k+"</div></div>"; }
+  // 型キー(切り口##パターン)を会員向け表示に。##以降のコードは出さず、切り口＋パターンの日本語ラベルにする。
+  function keyJp(k){ var base=String(k||"").split("##")[0]; if(!base) return ""; var pl=patLabelFromKey(k); return esc(base)+(pl?"（"+pl+"）":""); }
   function learnedCard(l){
     l=l||{};
-    var ha=(l.hook_affinity||[]).slice(0,3).map(function(x){return esc(x.key);}).filter(Boolean);
+    var ha=(l.hook_affinity||[]).slice(0,3).map(function(x){return keyJp(x.key);}).filter(Boolean);
     var bh=(l.best_hours||[]).slice(0,3).map(function(x){return esc(x.key)+"時";}).filter(Boolean);
     var lp=l.length_pref, fp=l.format_pref;
     var hasLp=lp&&lp.prefer&&lp.prefer!=="none", hasFp=fp&&fp.prefer&&fp.prefer!=="none";
@@ -2152,28 +2154,28 @@ export const DASHBOARD_HTML = `<!doctype html>
     if(hasFp) h+="<div style='margin-top:4px'>反応が良い形式：<b>"+(fp.prefer==="連結"?"2ポスト連結":"単発")+"</b></div>";
     if(enKeys.length){
       h+="<div style='margin-top:8px'><div style='font-weight:600'>型ごとの書き方の好み（添削から学習）</div>";
-      enKeys.slice(0,8).forEach(function(k){ h+="<div class='note' style='margin-top:3px;line-height:1.5'>・<b>"+esc(k)+"</b>："+esc(en[k].note)+"</div>"; });
+      enKeys.slice(0,8).forEach(function(k){ h+="<div class='note' style='margin-top:3px;line-height:1.5'>・<b>"+keyJp(k)+"</b>："+esc(en[k].note)+"</div>"; });
       h+="</div>";
     }
     h+="<div class='note' style='margin-top:6px'>これらは次のポスト生成・配信に自動で反映されます。</div></div>";
     return h;
   }
   var ANALYSIS_DAYS=0; // 集計期間（日数。0=全期間）
-  var ANALYSIS_CARDS=[]; var ANALYSIS_FOCUS=null; var CARD_OFFSET=0; // 改善カード（常時3枚・手動ローテ）
+  var ANALYSIS_CARDS=[]; var ANALYSIS_FOCUS=null; var CARD_OFFSET=0; var ALL_POLICIES=[]; // 改善カード（常時3枚・手動ローテ）＋全カタログ
   // ※名前を renderCards にしない：画像カード設定の renderCards（後方定義）と衝突して上書きされ、指針カードが描画されなくなる（1.13で修正済みの実バグ）。
   function renderHintCards(){
     var el=$("hintBody"); if(!el) return;
     var html="";
-    if(ANALYSIS_FOCUS){ var f=ANALYSIS_FOCUS; html+="<div style='background:var(--accent-bg);border-radius:var(--radius-sm);padding:8px 10px;margin-bottom:8px;font-size:13px'>🎯 いま「<b>"+esc(f.label||f.value)+"</b>」にフォーカス中。<b>次の自動補充サイクル</b>から多めに作ります。　<a onclick='clearFocus()' style='cursor:pointer;color:var(--accent-strong);font-weight:600'>自動に戻す</a></div>"; }
+    if(ANALYSIS_FOCUS){ var f=ANALYSIS_FOCUS; html+="<div style='background:var(--accent-bg);border-radius:var(--radius-sm);padding:8px 10px;margin-bottom:8px;font-size:13px'>🎯 いま「<b>"+esc(f.label||f.policy)+"</b>」を方針に設定中（<b>次の1サイクル</b>だけ有効・サイクルが切り替わると自動で解除されます）。　<a onclick='clearFocus()' style='cursor:pointer;color:var(--accent-strong);font-weight:600'>今すぐ自動に戻す</a></div>"; }
     var cards=ANALYSIS_CARDS||[];
     if(!cards.length){ el.innerHTML=html||"<div class='note'>提案はありません。</div>"; return; }
     var shown=Math.min(3,cards.length);
     for(var k=0;k<shown;k++){
       var idx=(CARD_OFFSET+k)%cards.length; var c=cards[idx];
-      var active=ANALYSIS_FOCUS && c.focus && ANALYSIS_FOCUS.dim===c.focus.dim && ANALYSIS_FOCUS.value===c.focus.value;
+      var active=ANALYSIS_FOCUS && c.focus && ANALYSIS_FOCUS.policy===c.focus.policy;
       var ic=c.tone==='good'?'👍':'💡';
-      var btn=active ? "<span style='color:var(--accent-strong);font-weight:700;font-size:13px'>🎯 この指針で回しています</span>"
-                     : "<button class='accent' style='padding:5px 14px;font-size:13px' onclick='setFocusByCard("+idx+")'>▶ この指針で回す</button>";
+      var btn=active ? "<span style='color:var(--accent-strong);font-weight:700;font-size:13px'>🎯 この方針で回しています</span>"
+                     : "<button class='accent' style='padding:5px 14px;font-size:13px' onclick='setFocusByCard("+idx+")'>▶ この方針で回す</button>";
       html+="<div class='hintcard"+(active?" on":"")+"'><div class='hc-text'>"+ic+" "+esc(c.text)+"</div><div style='margin-top:10px'>"+btn+"</div></div>";
     }
     el.innerHTML=html;
@@ -2188,16 +2190,36 @@ export const DASHBOARD_HTML = `<!doctype html>
   }
   function setFocusByCard(idx){
     var c=(ANALYSIS_CARDS||[])[idx]; if(!c||!c.focus) return;
-    api("POST","/api/account/focus",{account:ACC,focus:c.focus}).then(function(r){
-      if(r.body&&r.body.ok){ msg("「"+(c.focus.label||c.focus.value)+"」を指針に設定しました。次の自動補充サイクルから反映されます（自動承認モードで効きます）。"); loadAnalysis(); }
+    setFocusByPolicy(c.focus.policy, c.focus.label);
+  }
+  function setFocusByPolicy(policy, label){
+    api("POST","/api/account/focus",{account:ACC,policy:policy}).then(function(r){
+      if(r.body&&r.body.ok){ msg("「"+(label||(r.body.focus&&r.body.focus.label)||policy)+"」を次のサイクルの方針に設定しました。"); loadAnalysis(); }
       else { msg((r.body&&r.body.error)||"設定に失敗しました。",false); }
     });
   }
   function clearFocus(){
-    api("POST","/api/account/focus",{account:ACC,focus:null}).then(function(r){
+    api("POST","/api/account/focus",{account:ACC,policy:null}).then(function(r){
       if(r.body&&r.body.ok){ msg("自動（バランス）に戻しました。"); loadAnalysis(); }
       else { msg("解除に失敗しました。",false); }
     });
+  }
+  // 方針カタログをカテゴリごとにグルーピングして描画（AI提案を待たず直接選べる）。
+  function renderAllPolicies(){
+    var list=ALL_POLICIES||[]; if(!list.length) return "";
+    var byCat={}; var order=[];
+    list.forEach(function(p){ if(!byCat[p.category]){ byCat[p.category]=[]; order.push(p.category); } byCat[p.category].push(p); });
+    var h="<details style='margin-top:10px'><summary style='cursor:pointer;font-weight:500;font-size:13px'>すべての方針から選ぶ（"+list.length+"種）</summary><div style='margin-top:8px'>";
+    order.forEach(function(cat){
+      h+="<div class='note' style='font-weight:600;margin-top:8px'>"+esc(cat)+"</div><div class='row' style='gap:6px;flex-wrap:wrap;margin-top:4px'>";
+      byCat[cat].forEach(function(p){
+        var active=ANALYSIS_FOCUS && ANALYSIS_FOCUS.policy===p.id;
+        h+="<button class='"+(active?"accent":"soft")+"' style='padding:5px 12px;font-size:13px' onclick=\\"setFocusByPolicy('"+p.id+"','"+esc(p.label).replace(/'/g,"&#39;")+"')\\">"+(active?"🎯 ":"")+esc(p.label)+"</button>";
+      });
+      h+="</div>";
+    });
+    h+="</div></details>";
+    return h;
   }
   function setPeriod(days){
     ANALYSIS_DAYS=days;
@@ -2412,18 +2434,19 @@ export const DASHBOARD_HTML = `<!doctype html>
         h+="</div>";
       }
       h+="</div>";
-      // 改善のヒント（常時3枚のカード＋手動で別案ローテ）
-      ANALYSIS_CARDS=b.cards||[]; ANALYSIS_FOCUS=b.focus||null; CARD_OFFSET=0;
-      if(ANALYSIS_CARDS.length || ANALYSIS_FOCUS){
+      // 改善のヒント（常時3枚のカード＋手動で別案ローテ＋全カタログから直接選択）
+      ANALYSIS_CARDS=b.cards||[]; ANALYSIS_FOCUS=b.focus||null; ALL_POLICIES=b.all_policies||[]; CARD_OFFSET=0;
+      if(ANALYSIS_CARDS.length || ANALYSIS_FOCUS || ALL_POLICIES.length){
         h+="<div class='card' style='border-left:3px solid var(--accent)'><h3 style='margin-top:0'>🎯 次の学習サイクルの指針を選ぶ</h3>";
         var ph=b.learn_phase;
         if(ph){ h+="<div class='note' style='margin:0 0 8px'>学習フェーズ："+(ph==='test'?"<b>テスト期</b>（いろいろな型を試して傾向を集める）":"<b>微調整期</b>（効く型を“書き方”ごと磨く）")+"</div>"; }
-        h+="<p class='note' style='margin:0 0 10px'>下のカードから1つ選ぶと、次のサイクルがその方向に寄ります。選ばなければ自動でバランスよく回ります。</p>";
+        h+="<p class='note' style='margin:0 0 10px'>方針は必ず複数の型・パターンにまたがる“グループ単位”です（1つの型だけに絞り込むことはありません）。選ぶと<b>次の1サイクル</b>だけ効き、サイクルが切り替わると自動で解除されます。選ばなければ自動でバランスよく回ります。</p>";
         h+="<div id='hintBody'></div>";
         h+="<div class='row' style='margin-top:8px;gap:8px;align-items:center'><button class='soft' id='aiCardBtn' onclick='aiSuggestCards()'>✨ AIに別の指針を考えてもらう</button><span class='note'>押すたびにAIが新しい3案を出します</span></div>";
+        h+=renderAllPolicies();
         var ins=b.insights||[];
         if(ins.length){ h+="<div class='note' style='margin-top:10px;line-height:1.8'>"; ins.forEach(function(x){ var ic=x.tone==='good'?'👍':x.tone==='bad'?'⚠️':'💡'; h+=ic+" "+esc(x.text)+"<br>"; }); h+="</div>"; }
-        h+="<div class='note' style='margin-top:8px'>📌 選んだ指針は<b>自動承認モードの「次の補充サイクル」から</b>反映されます（在庫が減って新しく作られるぶん）。手動承認モードでは効きません（自分で型を選ぶ運用）。<br>「平常比」＝あなたの平均を100%とした相対値（公平に補正済み）。最初の3案はデータからの自動抽出（無料）、上のボタンはAIが毎回新しく考えます（少額のAI料金）。</div></div>";
+        h+="<div class='note' style='margin-top:8px'>📌 選んだ方針は、次に下書きが作られるタイミング（自動補充・手動での「1日分を追加」など）から反映されます。<br>「平常比」＝あなたの平均を100%とした相対値（公平に補正済み）。最初の3案はデータからの自動抽出（無料）、AIのボタンは押すたびに新しく考えます（少額のAI料金）。</div></div>";
       }
       var ct="";
       for (var ci=0; ci<CATS.length; ci++){ ct += "<span class='rtab"+(CATS[ci].key===RANK_CAT?" on":"")+"' onclick=\\"rankCat('"+CATS[ci].key+"')\\">"+CATS[ci].label+"</span>"; }

@@ -36,7 +36,7 @@ import { generateDrafts } from "./generate";
 import { logClaudeUsage } from "./usage";
 import { syncHonbu, pullFromHonbu, registerWithHonbu, listMyInvites, ensureHonbuToken, fetchHonbuEmail } from "./honbu";
 import { getPromptPack, refreshPrompts, hydrateFromCache } from "./prompts";
-import { TYPE_INSTRUCTIONS, CATALOG, CATALOG_KEYS, DEFAULT_ON, DEFAULT_ON_FREE, isLongType, PATTERNS, metaOf, URL_TYPE_INSTRUCTION, URL_STYLES, resolveImageType } from "./taxonomy";
+import { TYPE_INSTRUCTIONS, CATALOG, CATALOG_KEYS, DEFAULT_ON, DEFAULT_ON_FREE, isLongType, PATTERNS, metaOf, URL_TYPE_INSTRUCTION, URL_STYLES, resolveImageType, POLICY_CATALOG, POLICY_BY_ID, type PolicyId } from "./taxonomy";
 
 // URL誘導(url)パターンの生成指示を作る。登録済みの飛ばし先があれば、その「タイトル・説明・URL」を使って
 // サンプルも実情報ベースで生成する（1本目をその内容に沿わせ、2本目に実URL）。未登録なら仮URL。
@@ -67,7 +67,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.24";
+const CODE_VERSION = "1.27";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -1809,7 +1809,7 @@ export default {
       }
       // AIが学習して効かせている傾向（個性プロファイル）。データが無くても返す。
       const profRow = await env.DB.prepare(
-        `SELECT key, value_json AS v FROM individual_profile WHERE account_id = ? AND key IN ('hook_affinity','best_hours','length_pref','format_pref','sample_size','cycle_focus','exec_notes')`
+        `SELECT key, value_json AS v FROM individual_profile WHERE account_id = ? AND key IN ('hook_affinity','best_hours','length_pref','format_pref','sample_size','cycle_focus','exec_notes','promo_affinity')`
       ).bind(acc).all<{ key: string; v: string }>().catch(() => ({ results: [] as Array<{ key: string; v: string }> }));
       const prof: Record<string, unknown> = {};
       for (const pr of profRow.results ?? []) { try { prof[pr.key] = JSON.parse(pr.v); } catch { /* skip */ } }
@@ -1930,9 +1930,10 @@ export default {
         org_er_pct: r.org_er_raw != null ? erPct(r.org_er_raw) : null,       // オーガニック分の反応率（あれば）
       }));
 
-      // 改善カード（行動に移せる focus＝サイクルを寄せられる）＋ 補足インサイト。
-      // 平常比(er_norm,1.0=平常)で評価。カードは benefit順、探索で必ず3枚以上に埋める。
-      type Focus = { dim: "hook" | "length" | "format"; value: string; label: string };
+      // 改善カード（行動に移せる「次の学習サイクルの指針」）＋ 補足インサイト。
+      // 2026-07-05：単一の狭い型を名指しする案は廃止。必ず複数の型/パターンにまたがる
+      // グループ単位の方針（taxonomy.ts POLICY_CATALOG）から選ぶ＝選び続けても偏りが複利で強まらない。
+      type Focus = { policy: PolicyId; label: string };
       const pctOf = (score: number) => Math.round((score - 1) * 100);
       const isThread = (r: Row) => !!r.hook && (r.hook.indexOf("🧵") === 0 || r.hook.indexOf("🔗") === 0);
       const normOf = (rs: Row[]) => med(rs.map((r) => r.er_norm).filter((x): x is number => x != null));
@@ -1941,32 +1942,54 @@ export default {
       const thrRows = rows.filter(isThread);
       const sglRows = rows.filter((r) => !isThread(r));
 
+      // 方針の利用可否（画像カードON・自作型あり・広告学習データありの時だけ、該当方針を出す）。
+      const cardOn = (await loadCardTheme(env, acc))?.on === true;
+      const hasCustomTypes = (await env.DB.prepare(`SELECT 1 FROM custom_types WHERE account_id = ? LIMIT 1`).bind(acc).first().catch(() => null)) != null;
+      const hasPromoData = (() => { try { const arr = prof.promo_affinity as Array<{ n?: number }> | undefined; return Array.isArray(arr) && arr.some((x) => (x?.n ?? 0) >= 3); } catch { return false; } })();
+      const policyOk = (id: PolicyId): boolean => { const d = POLICY_BY_ID[id]; if (!d?.requires) return true; if (d.requires === "image") return cardOn; if (d.requires === "custom") return hasCustomTypes; if (d.requires === "promo") return hasPromoData; return true; };
+      const availablePolicies = POLICY_CATALOG.filter((p) => policyOk(p.id));
+      const toFocus = (id: PolicyId): Focus => ({ policy: id, label: POLICY_BY_ID[id].label });
+
       const cardCands: Array<{ benefit: number; tone: "good" | "tip"; text: string; focus: Focus }> = [];
-      // 型（n≥2・平常比プラス・URL以外）
-      for (const t of by_type) {
-        if (t.n >= 2 && t.score > 1.0 && t.hook && t.hook in TYPE_INSTRUCTIONS) {
-          cardCands.push({ benefit: t.score - 1, tone: "good", text: `「${hookLabel(t.hook)}」が平常比+${pctOf(t.score)}%。多めに作ると効果的。`, focus: { dim: "hook", value: t.hook, label: `「${hookLabel(t.hook)}」を多めに` } });
-        }
+      // 型（複数まとめて）：上位グループ（n≥2・平常比プラス）が2件以上あれば「好調な型をまとめて増やす」を提案。
+      const goodTypes = by_type.filter((t) => t.n >= 2 && t.score > 1.0 && t.hook && t.hook in TYPE_INSTRUCTIONS).sort((a, b) => b.score - a.score);
+      if (goodTypes.length) {
+        const top = goodTypes.slice(0, 3);
+        const names = top.map((t) => `「${hookLabel(t.hook)}」`).join("・");
+        const avgPct = pctOf(top.reduce((s, t) => s + t.score, 0) / top.length);
+        cardCands.push({ benefit: top[0].score - 1, tone: "good", text: `${names}などが好調（平均平常比+${avgPct}%）。この系統をまとめて多めに。`, focus: toFocus("hook_top") });
       }
+      // 型のバリエーション：使われている型が少数に集中していれば提案。
+      const usedTypes = by_type.filter((t) => (t.n ?? 0) > 0);
+      const totalPosts = usedTypes.reduce((s, t) => s + (t.n ?? 0), 0);
+      if (usedTypes.length >= 3 && totalPosts >= 10) {
+        const top3Share = usedTypes.slice().sort((a, b) => (b.n ?? 0) - (a.n ?? 0)).slice(0, 3).reduce((s, t) => s + (t.n ?? 0), 0) / totalPosts;
+        if (top3Share >= 0.6) cardCands.push({ benefit: top3Share, tone: "tip", text: `上位3型で全体の${Math.round(top3Share * 100)}%を占めています。型のバリエーションを増やすと偏りをならせます。`, focus: toFocus("hook_diversify") });
+      }
+      // まだ試していない型（探索カード。正典型でn<2のものがあれば）
+      const testedWell = new Set(by_type.filter((t) => t.n >= 2).map((t) => t.hook));
+      const untried = CATALOG_KEYS.filter((k) => !testedWell.has(k));
+      if (untried.length) cardCands.push({ benefit: -0.5, tone: "tip", text: `まだあまり試せていない型が${untried.length}種あります。探索を増やしてみては。`, focus: toFocus("hook_explore") });
+      // 伸び悩む型
+      const weakTypes = by_type.filter((t) => t.n >= 2 && t.score < 0.9);
+      if (weakTypes.length >= 2) cardCands.push({ benefit: -0.3, tone: "tip", text: `伸び悩む型が${weakTypes.length}種あります。控えめにして他に回すことができます。`, focus: toFocus("hook_weak_down") });
       // 長さ（各3件以上）
       if (longRows.length >= 3 && shortRows.length >= 3) {
         const ls = normOf(longRows), ss = normOf(shortRows);
-        if (ls > ss * 1.05) cardCands.push({ benefit: ls / ss - 1, tone: "tip", text: "長め(140字超)が短めより反応が良いです。", focus: { dim: "length", value: "長文", label: "長文を多めに" } });
-        else if (ss > ls * 1.05) cardCands.push({ benefit: ss / ls - 1, tone: "tip", text: "短めが長めより反応が良いです。", focus: { dim: "length", value: "短文", label: "短文を多めに" } });
+        if (ls > ss * 1.05) cardCands.push({ benefit: ls / ss - 1, tone: "tip", text: "長め(140字超)が短めより反応が良いです。", focus: toFocus("length_long") });
+        else if (ss > ls * 1.05) cardCands.push({ benefit: ss / ls - 1, tone: "tip", text: "短めが長めより反応が良いです。", focus: toFocus("length_short") });
       }
       // 形式（各3件以上）
       if (thrRows.length >= 3 && sglRows.length >= 3) {
         const ts = normOf(thrRows), ss = normOf(sglRows);
-        if (ts > ss * 1.05) cardCands.push({ benefit: ts / ss - 1, tone: "tip", text: "2ポスト連結が単発より反応が良いです。", focus: { dim: "format", value: "連結", label: "2ポスト連結を多めに" } });
-        else if (ss > ts * 1.05) cardCands.push({ benefit: ss / ts - 1, tone: "tip", text: "単発が連結より反応が良いです。", focus: { dim: "format", value: "単発", label: "単発を多めに" } });
+        if (ts > ss * 1.05) cardCands.push({ benefit: ts / ss - 1, tone: "tip", text: "2ポスト連結が単発より反応が良いです。", focus: toFocus("format_thread") });
+        else if (ss > ts * 1.05) cardCands.push({ benefit: ss / ts - 1, tone: "tip", text: "単発が連結より反応が良いです。", focus: toFocus("format_single") });
       }
+      // 広告（データがある時だけ）
+      if (hasPromoData) cardCands.push({ benefit: 0.2, tone: "tip", text: "広告で効いている型のデータがたまってきました。広告向けの型を増やしてみては。", focus: toFocus("promo_effective") });
+      // 自作の型（ある時だけ）
+      if (hasCustomTypes) cardCands.push({ benefit: -0.4, tone: "tip", text: "自作の型はまだ出番が少なめかもしれません。増やして育ててみては。", focus: toFocus("custom_types") });
       cardCands.sort((a, b) => b.benefit - a.benefit);
-      // 探索カードで3枚以上に：まだ十分試せていない正典型（n<2）
-      const testedWell = new Set(by_type.filter((t) => t.n >= 2).map((t) => t.hook));
-      for (const k of CATALOG_KEYS) {
-        const nm = metaOf(k).name;
-        if (!testedWell.has(k)) cardCands.push({ benefit: -1, tone: "tip", text: `「${nm}」はまだあまり試せていません。試してみては。`, focus: { dim: "hook", value: k, label: `「${nm}」を試す` } });
-      }
       const cards = cardCands.slice(0, 9).map(({ benefit, ...c }) => { void benefit; return c; });
 
       // 補足インサイト（カードにしない情報）
@@ -1988,6 +2011,8 @@ export default {
         focus: prof.cycle_focus ?? null,
         summary,
         cards,
+        // 全カタログ（条件を満たすものだけ）。会員がAI提案を待たず直接選べるように。
+        all_policies: availablePolicies.map((p) => ({ id: p.id, category: p.category, label: p.label })),
         insights,
         by_type,
         by_post,
@@ -2040,21 +2065,18 @@ export default {
     }
     // サイクルのフォーカス設定（改善カードを選ぶ／自動に戻す）。
     // focus=null で解除（＝自動）。{dim:'hook'|'length'|'format', value, label} で寄せる。
+    // 「次の学習サイクルの指針」を設定/解除。policyはtaxonomy.tsのPOLICY_CATALOGのidのみ受理
+    // （必ず複数の型/パターンにまたがるグループ単位の方針＝単一の狭い型を名指しでロックしない）。
+    // 1サイクル限定：cycle.tsのサイクル切替時に自動で消える。
     if (req.method === "POST" && url.pathname === "/api/account/focus") {
-      const b = (await req.json().catch(() => null)) as {
-        account?: string;
-        focus?: { dim?: string; value?: string; label?: string } | null;
-      } | null;
+      const b = (await req.json().catch(() => null)) as { account?: string; policy?: string | null } | null;
       if (!b?.account) return json({ error: "account は必須" }, 400);
-      const f = b.focus;
-      let store: string | null = null;
-      if (f && (f.dim === "hook" || f.dim === "length" || f.dim === "format") && typeof f.value === "string" && f.value) {
-        store = JSON.stringify({ dim: f.dim, value: f.value, label: String(f.label ?? f.value) });
-      }
-      if (store === null) {
+      const def = b.policy ? POLICY_BY_ID[b.policy] : undefined;
+      if (!b.policy || !def) {
         await env.DB.prepare(`DELETE FROM individual_profile WHERE account_id = ? AND key = 'cycle_focus'`).bind(b.account).run();
         return json({ ok: true, focus: null });
       }
+      const store = JSON.stringify({ policy: def.id, label: def.label });
       await env.DB.prepare(
         `INSERT INTO individual_profile (account_id, key, value_json, updated_at)
          VALUES (?, 'cycle_focus', ?, datetime('now'))
@@ -2063,12 +2085,15 @@ export default {
       return json({ ok: true, focus: JSON.parse(store) });
     }
     // AIに「次の指針（フォーカスカード）」を提案させる（押すたびに新しい3案・Haiku）。
+    // AIに「次の学習サイクルの指針」を考えてもらう。2026-07-05：単一の狭い型を自由発想で
+    // 提案させる方式は廃止。必ずPOLICY_CATALOGのグループ単位の方針から選ばせる（enum強制＝表記ゆれで
+    // 全滅する問題も構造的に無い）。textは理由説明のみで、実際に何を多めにするかは policy が決める。
     if (req.method === "POST" && url.pathname === "/api/account/suggest-cards") {
       const b = (await req.json().catch(() => null)) as { account?: string } | null;
       if (!b?.account) return json({ error: "account は必須" }, 400);
       const claudeKey = (await resolveCreds(env, b.account))?.claudeKey;
       if (!claudeKey) return json({ ok: false, error: "Claude APIキーが未設定です" }, 400);
-      // 型別の成績（平常比＝er_norm平均）
+      // 型別の成績（平常比＝er_norm平均）→ AIへの文脈用に日本語ラベルで要約するだけ（valueには使わない）。
       let typeRows: Array<{ hook: string; n: number; score: number }> = [];
       try {
         const tr = await env.DB.prepare(
@@ -2080,34 +2105,56 @@ export default {
         ).bind(b.account).all<{ hook: string; n: number; score: number }>();
         typeRows = tr.results ?? [];
       } catch { typeRows = []; }
-      // 使える型（おまかせ生成できる＝URL以外）：正典＋オリジナル型
-      const customRows = await env.DB.prepare(`SELECT name FROM custom_types WHERE account_id = ?`).bind(b.account).all<{ name: string }>().catch(() => ({ results: [] as Array<{ name: string }> }));
-      const availTypes = [...CATALOG_KEYS, ...(customRows.results ?? []).map((c) => "⭐ " + c.name)];
-      const top = typeRows.filter((t) => t.n >= 2).slice(0, 5).map((t) => `${t.hook}（平常比${Math.round((t.score - 1) * 100)}%・${t.n}本）`).join("、") || "（まだ十分なデータなし）";
-      const bottom = typeRows.filter((t) => t.n >= 2).slice(-3).map((t) => `${t.hook}（平常比${Math.round((t.score - 1) * 100)}%）`).join("、");
+      const patShortJp = (patKey: string): string => {
+        const p = PATTERNS[patKey]; if (!p || p.url) return "";
+        return (p.kind === "thread" ? "連結" : "単発") + (p.long ? "・長文" : "・短文") + (p.image ? "・画像" : "");
+      };
+      const hookLabelJp = (hook: string): string => {
+        const i = hook.indexOf("##"); if (i < 0) return hook;
+        const s = patShortJp(hook.slice(i + 2)); const prefix = hook.slice(0, i);
+        return s ? `${prefix}（${s}）` : prefix;
+      };
+      const top = typeRows.filter((t) => t.n >= 2).slice(0, 5).map((t) => `${hookLabelJp(t.hook)}（平常比${Math.round((t.score - 1) * 100)}%・${t.n}本）`).join("、") || "（まだ十分なデータなし）";
+      const bottom = typeRows.filter((t) => t.n >= 2).slice(-3).map((t) => `${hookLabelJp(t.hook)}（平常比${Math.round((t.score - 1) * 100)}%）`).join("、");
+      const untriedN = CATALOG_KEYS.filter((k) => !typeRows.some((t) => t.hook === k && t.n >= 2)).length;
+      // この会員で選べる方針だけに絞る（画像カードOFF/自作型なし/広告データなしの分は除外）。
+      const cardOn = (await loadCardTheme(env, b.account))?.on === true;
+      const hasCustomTypes = (await env.DB.prepare(`SELECT 1 FROM custom_types WHERE account_id = ? LIMIT 1`).bind(b.account).first().catch(() => null)) != null;
+      let hasPromoData = false;
+      try { const r = await env.DB.prepare(`SELECT value_json AS v FROM individual_profile WHERE account_id = ? AND key = 'promo_affinity'`).bind(b.account).first<{ v: string }>(); const arr = r?.v ? JSON.parse(r.v) : null; hasPromoData = Array.isArray(arr) && arr.some((x: { n?: number }) => (x?.n ?? 0) >= 3); } catch { hasPromoData = false; }
+      const avail = POLICY_CATALOG.filter((p) => !p.requires || (p.requires === "image" && cardOn) || (p.requires === "custom" && hasCustomTypes) || (p.requires === "promo" && hasPromoData));
+      const policyIds = avail.map((p) => p.id);
+      const catalogText = avail.map((p) => `${p.id}: ${p.label}`).join("\n");
       const SUG_SCHEMA = {
         type: "object", additionalProperties: false,
-        properties: { cards: { type: "array", items: { type: "object", additionalProperties: false, properties: { text: { type: "string" }, dim: { type: "string" }, value: { type: "string" } }, required: ["text", "dim", "value"] } } },
+        properties: { cards: { type: "array", items: { type: "object", additionalProperties: false, properties: { text: { type: "string" }, policy: { type: "string", enum: policyIds } }, required: ["text", "policy"] } } },
         required: ["cards"],
       };
       try {
         const { text, usage } = await callClaude({
-          apiKey: claudeKey, model: "claude-haiku-4-5", noEffort: true, thinkingMode: "disabled", maxTokens: 600, schema: SUG_SCHEMA,
-          system: [{ text: "あなたはX投稿の分析から『次に試す指針』を提案するアシスタント。提案は必ず会員が実行できる形（型/長さ/形式）に落とす。前向きで具体的に。" }],
+          apiKey: claudeKey, model: "claude-haiku-4-5", noEffort: true, thinkingMode: "disabled", maxTokens: 500, schema: SUG_SCHEMA,
+          system: [{
+            text:
+              "あなたはX投稿の分析から『次の学習サイクルの指針（方針）』を提案するアシスタント。" +
+              "方針は必ず与えられたカタログのidから選ぶ（自由発想の型名は書かない）。" +
+              "1つの狭い型だけを名指しする助言は禁止（カタログの各方針はもともと複数の型/パターンにまたがるグループ単位の方針）。" +
+              "textは会員が読む一言の理由説明。日本語のみ、##や英数字の内部コード（例：img_sl_list）は絶対に書かない。参考として型名を1つ挙げてもよいが、それが方針の全てだと誤解されない書き方にする。",
+          }],
           userText:
-            `# データ\n効いている型：${top}\n伸び悩み：${bottom || "（なし）"}\n\n` +
-            `# 使える型名（hookのvalueはこの中から選ぶ）\n${availTypes.join("｜")}\n\n` +
-            `次に試すと良い指針を3つ、毎回ちがう切り口で。各カード：text=一言の提案（なぜ良いか）、dim='hook'|'length'|'format'、value=(hookなら上の型名から1つ／lengthなら'長文'か'短文'／formatなら'連結'か'単発')。効く型を伸ばす案と、まだ試せていない型を試す案をバランスよく。`,
+            `# データ\n効いている型：${top}\n伸び悩み：${bottom || "（なし）"}\nまだ試していない型：${untriedN}種\n\n` +
+            `# 選べる方針（policyはこのidから選ぶ）\n${catalogText}\n\n` +
+            `次のサイクルで試すと良い方針を3つ、毎回ちがう切り口で。効く型を伸ばす案・まだ試せていない型を試す案・バランス系の案を混ぜる。`,
         });
         await logClaudeUsage(env, b.account, "claude-haiku-4-5", usage, "suggest_cards");
-        const parsed = JSON.parse(text) as { cards?: Array<{ text?: string; dim?: string; value?: string }> };
+        const parsed = JSON.parse(text) as { cards?: Array<{ text?: string; policy?: string }> };
+        const cleanText = (s: string) => String(s ?? "").replace(/##[A-Za-z0-9_]+/g, "").replace(/\b(?:img|single|thread|sl|ts)[A-Za-z0-9_]*\b/g, "").replace(/\s{2,}/g, " ").trim().slice(0, 120);
+        const seen = new Set<string>();
         const cards = (parsed.cards ?? [])
           .map((c) => {
-            const dim = c.dim, value = String(c.value ?? "");
-            if (dim === "hook" && availTypes.includes(value)) return { tone: "tip", text: String(c.text ?? "").slice(0, 120), focus: { dim, value, label: `「${value}」を多めに` } };
-            if (dim === "length" && (value === "長文" || value === "短文")) return { tone: "tip", text: String(c.text ?? "").slice(0, 120), focus: { dim, value, label: `${value}を多めに` } };
-            if (dim === "format" && (value === "連結" || value === "単発")) return { tone: "tip", text: String(c.text ?? "").slice(0, 120), focus: { dim, value, label: value === "連結" ? "2ポスト連結を多めに" : "単発を多めに" } };
-            return null;
+            const def = c.policy ? POLICY_BY_ID[c.policy] : undefined;
+            if (!def || seen.has(def.id)) return null;
+            seen.add(def.id);
+            return { tone: "tip" as const, text: cleanText(c.text ?? ""), focus: { policy: def.id, label: def.label } };
           })
           .filter((c): c is NonNullable<typeof c> => c !== null)
           .slice(0, 3);
