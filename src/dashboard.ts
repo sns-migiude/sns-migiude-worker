@@ -2440,6 +2440,14 @@ export const DASHBOARD_HTML = `<!doctype html>
         h+="<div class='card' style='border-left:3px solid var(--accent)'><h3 style='margin-top:0'>🎯 次の学習サイクルの指針を選ぶ</h3>";
         var ph=b.learn_phase;
         if(ph){ h+="<div class='note' style='margin:0 0 8px'>学習フェーズ："+(ph==='test'?"<b>テスト期</b>（いろいろな型を試して傾向を集める）":"<b>微調整期</b>（効く型を“書き方”ごと磨く）")+"</div>"; }
+        if(b.cycle_ends_at){
+          var ce=new Date(b.cycle_ends_at); var ceJst=new Date(ce.getTime()+9*3600*1000);
+          var ceStr=(ceJst.getUTCMonth()+1)+"月"+ceJst.getUTCDate()+"日ごろ";
+          var dl=b.cycle_days_left; var dlStr=(dl!=null)?("（あと"+(dl<=0?"まもなく":dl+"日")+"）"):"";
+          h+="<div class='note' style='margin:0 0 8px'>今のサイクルは<b>"+ceStr+"</b>に切り替わります"+dlStr+"。方針を選んでいる場合、そこまで有効です。</div>";
+        } else {
+          h+="<div class='note' style='margin:0 0 8px'>まだ最初のサイクルが始まったばかりです（次の自動実行で1サイクル目が確定します）。</div>";
+        }
         h+="<p class='note' style='margin:0 0 10px'>方針は必ず複数の型・パターンにまたがる“グループ単位”です（1つの型だけに絞り込むことはありません）。選ぶと<b>次の1サイクル</b>だけ効き、サイクルが切り替わると自動で解除されます。選ばなければ自動でバランスよく回ります。</p>";
         h+="<div id='hintBody'></div>";
         h+="<div class='row' style='margin-top:8px;gap:8px;align-items:center'><button class='soft' id='aiCardBtn' onclick='aiSuggestCards()'>✨ AIに別の指針を考えてもらう</button><span class='note'>押すたびにAIが新しい3案を出します</span></div>";

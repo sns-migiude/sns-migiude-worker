@@ -1784,6 +1784,20 @@ export default {
       const daysRaw = parseInt(url.searchParams.get("days") ?? "0", 10);
       const days = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(daysRaw, 3650) : 0;
       const periodSql = days > 0 ? ` AND p.posted_at >= datetime('now', '-${days} days')` : "";
+      // 今のサイクルがいつ切り替わるか（＝方針の有効期限）。cycle_state.updated_at + accounts.cycle_days。
+      // 未着手（cycle_state無し）は初回サイクル中＝次のcron実行ですぐ切り替わりうる。
+      let cycleEndsAt: string | null = null; let cycleDaysLeft: number | null = null;
+      try {
+        const accRow = await env.DB.prepare(`SELECT cycle_days FROM accounts WHERE id = ?`).bind(acc).first<{ cycle_days: number }>();
+        const csRow = await env.DB.prepare(`SELECT updated_at FROM cycle_state WHERE account_id = ?`).bind(acc).first<{ updated_at: string }>();
+        const cycleDays = accRow?.cycle_days ?? 5;
+        if (csRow?.updated_at) {
+          const startMs = new Date(csRow.updated_at.replace(" ", "T") + "Z").getTime();
+          const endMs = startMs + cycleDays * 86400_000;
+          cycleEndsAt = new Date(endMs).toISOString();
+          cycleDaysLeft = Math.max(0, Math.ceil((endMs - Date.now()) / 86400_000));
+        }
+      } catch { /* 表示できなくても分析は止めない */ }
       // 各投稿の「最新スナップショット」を取る（日次で更新されるため）。
       let rows: Array<{
         id: number; hook: string | null; body: string; posted_at: string; pid: string | null;
@@ -1815,7 +1829,7 @@ export default {
       for (const pr of profRow.results ?? []) { try { prof[pr.key] = JSON.parse(pr.v); } catch { /* skip */ } }
 
       if (!rows.length) {
-        return json({ account: acc, has_data: false, focus: prof.cycle_focus ?? null, learned: { hook_affinity: prof.hook_affinity ?? [], best_hours: prof.best_hours ?? [], length_pref: prof.length_pref ?? null, format_pref: prof.format_pref ?? null } });
+        return json({ account: acc, has_data: false, focus: prof.cycle_focus ?? null, cycle_ends_at: cycleEndsAt, cycle_days_left: cycleDaysLeft, learned: { hook_affinity: prof.hook_affinity ?? [], best_hours: prof.best_hours ?? [], length_pref: prof.length_pref ?? null, format_pref: prof.format_pref ?? null } });
       }
 
       const med = (a: number[]) => {
@@ -2009,6 +2023,8 @@ export default {
         period_days: days,
         learn_phase: ((prof.sample_size as { n?: number } | undefined)?.n ?? 0) >= 20 ? "tune" : "test",
         focus: prof.cycle_focus ?? null,
+        cycle_ends_at: cycleEndsAt, // 今のサイクルの切替予定（この日時にcycle_focusが自動解除される）
+        cycle_days_left: cycleDaysLeft,
         summary,
         cards,
         // 全カタログ（条件を満たすものだけ）。会員がAI提案を待たず直接選べるように。
