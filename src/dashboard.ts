@@ -2137,9 +2137,11 @@ export const DASHBOARD_HTML = `<!doctype html>
   }
   // 分析＆改善：反応データの集計・型別/時間帯別の成績・伸びたポスト・AIの学習を表示。
   function aTile(k,n){ return "<div class='tile'><div class='n'>"+n+"</div><div class='k'>"+k+"</div></div>"; }
+  // 型キー(切り口##パターン)を会員向け表示に。##以降のコードは出さず、切り口＋パターンの日本語ラベルにする。
+  function keyJp(k){ var base=String(k||"").split("##")[0]; if(!base) return ""; var pl=patLabelFromKey(k); return esc(base)+(pl?"（"+pl+"）":""); }
   function learnedCard(l){
     l=l||{};
-    var ha=(l.hook_affinity||[]).slice(0,3).map(function(x){return esc(x.key);}).filter(Boolean);
+    var ha=(l.hook_affinity||[]).slice(0,3).map(function(x){return keyJp(x.key);}).filter(Boolean);
     var bh=(l.best_hours||[]).slice(0,3).map(function(x){return esc(x.key)+"時";}).filter(Boolean);
     var lp=l.length_pref, fp=l.format_pref;
     var hasLp=lp&&lp.prefer&&lp.prefer!=="none", hasFp=fp&&fp.prefer&&fp.prefer!=="none";
@@ -2152,7 +2154,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     if(hasFp) h+="<div style='margin-top:4px'>反応が良い形式：<b>"+(fp.prefer==="連結"?"2ポスト連結":"単発")+"</b></div>";
     if(enKeys.length){
       h+="<div style='margin-top:8px'><div style='font-weight:600'>型ごとの書き方の好み（添削から学習）</div>";
-      enKeys.slice(0,8).forEach(function(k){ h+="<div class='note' style='margin-top:3px;line-height:1.5'>・<b>"+esc(k)+"</b>："+esc(en[k].note)+"</div>"; });
+      enKeys.slice(0,8).forEach(function(k){ h+="<div class='note' style='margin-top:3px;line-height:1.5'>・<b>"+keyJp(k)+"</b>："+esc(en[k].note)+"</div>"; });
       h+="</div>";
     }
     h+="<div class='note' style='margin-top:6px'>これらは次のポスト生成・配信に自動で反映されます。</div></div>";

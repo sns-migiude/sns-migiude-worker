@@ -67,7 +67,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.24";
+const CODE_VERSION = "1.26";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -2080,33 +2080,50 @@ export default {
         ).bind(b.account).all<{ hook: string; n: number; score: number }>();
         typeRows = tr.results ?? [];
       } catch { typeRows = []; }
-      // 使える型（おまかせ生成できる＝URL以外）：正典＋オリジナル型
+      // 型キー(切り口##パターン)を会員向けの日本語ラベルに変換（##等のコードを画面/AIに出さない）。
+      const patShortJp = (patKey: string): string => {
+        const p = PATTERNS[patKey]; if (!p || p.url) return "";
+        return (p.kind === "thread" ? "連結" : "単発") + (p.long ? "・長文" : "・短文") + (p.image ? "・画像" : "");
+      };
+      const hookLabelJp = (hook: string): string => {
+        const i = hook.indexOf("##"); if (i < 0) return hook;
+        const s = patShortJp(hook.slice(i + 2)); const prefix = hook.slice(0, i);
+        return s ? `${prefix}（${s}）` : prefix;
+      };
+      // 使える型（おまかせ生成できる＝URL以外）：正典＋オリジナル型。AIには日本語ラベルで渡し、valueはラベル→キーで戻す。
       const customRows = await env.DB.prepare(`SELECT name FROM custom_types WHERE account_id = ?`).bind(b.account).all<{ name: string }>().catch(() => ({ results: [] as Array<{ name: string }> }));
       const availTypes = [...CATALOG_KEYS, ...(customRows.results ?? []).map((c) => "⭐ " + c.name)];
-      const top = typeRows.filter((t) => t.n >= 2).slice(0, 5).map((t) => `${t.hook}（平常比${Math.round((t.score - 1) * 100)}%・${t.n}本）`).join("、") || "（まだ十分なデータなし）";
-      const bottom = typeRows.filter((t) => t.n >= 2).slice(-3).map((t) => `${t.hook}（平常比${Math.round((t.score - 1) * 100)}%）`).join("、");
+      const labelToKey = new Map<string, string>();
+      for (const k of availTypes) labelToKey.set(hookLabelJp(k), k);
+      const availLabels = [...labelToKey.keys()];
+      const top = typeRows.filter((t) => t.n >= 2).slice(0, 5).map((t) => `${hookLabelJp(t.hook)}（平常比${Math.round((t.score - 1) * 100)}%・${t.n}本）`).join("、") || "（まだ十分なデータなし）";
+      const bottom = typeRows.filter((t) => t.n >= 2).slice(-3).map((t) => `${hookLabelJp(t.hook)}（平常比${Math.round((t.score - 1) * 100)}%）`).join("、");
+      // valueをenumで許可リストに強制＝AIが表記を少しでも変えると一致しない問題を構造的に無くす。
+      const valueEnum = [...availLabels, "長文", "短文", "連結", "単発"];
       const SUG_SCHEMA = {
         type: "object", additionalProperties: false,
-        properties: { cards: { type: "array", items: { type: "object", additionalProperties: false, properties: { text: { type: "string" }, dim: { type: "string" }, value: { type: "string" } }, required: ["text", "dim", "value"] } } },
+        properties: { cards: { type: "array", items: { type: "object", additionalProperties: false, properties: { text: { type: "string" }, dim: { type: "string", enum: ["hook", "length", "format"] }, value: { type: "string", enum: valueEnum } }, required: ["text", "dim", "value"] } } },
         required: ["cards"],
       };
       try {
         const { text, usage } = await callClaude({
           apiKey: claudeKey, model: "claude-haiku-4-5", noEffort: true, thinkingMode: "disabled", maxTokens: 600, schema: SUG_SCHEMA,
-          system: [{ text: "あなたはX投稿の分析から『次に試す指針』を提案するアシスタント。提案は必ず会員が実行できる形（型/長さ/形式）に落とす。前向きで具体的に。" }],
+          system: [{ text: "あなたはX投稿の分析から『次に試す指針』を提案するアシスタント。提案は必ず会員が実行できる形（型/長さ/形式）に落とす。前向きで具体的に。textは会員が読む文なので、日本語の型名だけを使い、##や英数字の内部コード（例：img_sl_list）は絶対に書かない。" }],
           userText:
             `# データ\n効いている型：${top}\n伸び悩み：${bottom || "（なし）"}\n\n` +
-            `# 使える型名（hookのvalueはこの中から選ぶ）\n${availTypes.join("｜")}\n\n` +
-            `次に試すと良い指針を3つ、毎回ちがう切り口で。各カード：text=一言の提案（なぜ良いか）、dim='hook'|'length'|'format'、value=(hookなら上の型名から1つ／lengthなら'長文'か'短文'／formatなら'連結'か'単発')。効く型を伸ばす案と、まだ試せていない型を試す案をバランスよく。`,
+            `# 使える型名（hookのvalueはこの中から“表記どおり”1つ選ぶ）\n${availLabels.join("｜")}\n\n` +
+            `次に試すと良い指針を3つ、毎回ちがう切り口で。各カード：text=一言の提案（なぜ良いか・日本語のみ・内部コード禁止）、dim='hook'|'length'|'format'、value=(hookなら上の型名から1つ／lengthなら'長文'か'短文'／formatなら'連結'か'単発')。効く型を伸ばす案と、まだ試せていない型を試す案をバランスよく。`,
         });
         await logClaudeUsage(env, b.account, "claude-haiku-4-5", usage, "suggest_cards");
         const parsed = JSON.parse(text) as { cards?: Array<{ text?: string; dim?: string; value?: string }> };
+        // 安全網：AIのtextに万一コードが混ざっても除去（##xxx や 単独の英数字型キー）。
+        const cleanText = (s: string) => String(s ?? "").replace(/##[A-Za-z0-9_]+/g, "").replace(/\b(?:img|single|thread|sl|ts)[A-Za-z0-9_]*\b/g, "").replace(/\s{2,}/g, " ").trim().slice(0, 120);
         const cards = (parsed.cards ?? [])
           .map((c) => {
             const dim = c.dim, value = String(c.value ?? "");
-            if (dim === "hook" && availTypes.includes(value)) return { tone: "tip", text: String(c.text ?? "").slice(0, 120), focus: { dim, value, label: `「${value}」を多めに` } };
-            if (dim === "length" && (value === "長文" || value === "短文")) return { tone: "tip", text: String(c.text ?? "").slice(0, 120), focus: { dim, value, label: `${value}を多めに` } };
-            if (dim === "format" && (value === "連結" || value === "単発")) return { tone: "tip", text: String(c.text ?? "").slice(0, 120), focus: { dim, value, label: value === "連結" ? "2ポスト連結を多めに" : "単発を多めに" } };
+            if (dim === "hook") { const key = labelToKey.get(value); if (key) return { tone: "tip", text: cleanText(c.text ?? ""), focus: { dim, value: key, label: `「${value}」を多めに` } }; return null; }
+            if (dim === "length" && (value === "長文" || value === "短文")) return { tone: "tip", text: cleanText(c.text ?? ""), focus: { dim, value, label: `${value}を多めに` } };
+            if (dim === "format" && (value === "連結" || value === "単発")) return { tone: "tip", text: cleanText(c.text ?? ""), focus: { dim, value, label: value === "連結" ? "2ポスト連結を多めに" : "単発を多めに" } };
             return null;
           })
           .filter((c): c is NonNullable<typeof c> => c !== null)
