@@ -67,7 +67,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.23";
+const CODE_VERSION = "1.24";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -1786,7 +1786,7 @@ export default {
       const periodSql = days > 0 ? ` AND p.posted_at >= datetime('now', '-${days} days')` : "";
       // 各投稿の「最新スナップショット」を取る（日次で更新されるため）。
       let rows: Array<{
-        hook: string | null; body: string; posted_at: string; pid: string | null;
+        id: number; hook: string | null; body: string; posted_at: string; pid: string | null;
         impressions: number | null; likes: number | null; reposts: number | null; replies: number | null;
         quotes: number | null; bookmarks: number | null; url_link_clicks: number | null;
         er_raw: number | null; er_norm: number | null; promoted: number | null;
@@ -1794,7 +1794,7 @@ export default {
       }> = [];
       try {
         const r = await env.DB.prepare(
-          `SELECT p.hook AS hook, p.body AS body, p.posted_at AS posted_at, p.platform_post_id AS pid, p.promoted AS promoted,
+          `SELECT p.id AS id, p.hook AS hook, p.body AS body, p.posted_at AS posted_at, p.platform_post_id AS pid, p.promoted AS promoted,
                   m.impressions, m.likes, m.reposts, m.replies, m.quotes, m.bookmarks, m.url_link_clicks, m.er_raw, m.er_norm,
                   m.org_impressions, m.org_er_raw, m.promo_impressions, m.promo_er_raw
              FROM posts p
@@ -1921,7 +1921,7 @@ export default {
 
       // ポスト別（1ポスト＝1行・生の値。多すぎないよう直近100件）
       const by_post = rows.slice(0, 100).map((r) => ({
-        hook: r.hook, body: r.body.slice(0, 80), posted_at: r.posted_at, pid: r.pid,
+        id: r.id, hook: r.hook, body: r.body.slice(0, 80), posted_at: r.posted_at, pid: r.pid,
         impressions: num(r.impressions), likes: num(r.likes), reposts: num(r.reposts),
         quotes: num(r.quotes), bookmarks: num(r.bookmarks), clicks: num(r.url_link_clicks),
         er_pct: erPct(r.er_raw), score: r.er_norm != null ? Math.round(r.er_norm * 100) / 100 : null,

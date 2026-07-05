@@ -2430,7 +2430,7 @@ export const DASHBOARD_HTML = `<!doctype html>
       h+="<div class='card'><h3 style='margin-top:0'>ランキング</h3>"
         + "<div class='row' id='rankCatTabs' style='gap:6px;margin-bottom:8px'>"+ct+"</div>"
         + "<div id='rankBody'></div>"
-        + "<div class='note' style='margin-top:8px'>列の見出しをタップで並び替え（もう一度で昇順⇄降順）。反応率＝(いいね＋リポスト＋返信)÷インプの平均。型別・時間帯別は平均値です。</div></div>";
+        + "<div class='note' style='margin-top:8px'>列の見出しをタップで並び替え（もう一度で昇順⇄降順）。反応率＝(いいね＋リポスト＋返信)÷インプの平均。型別・時間帯別は平均値です。<br>💡 <b>ポスト別</b>で、広告（ブースト）に使った投稿は各行の「広告にする」で印を付けられます。印を付けた投稿は、広告インプで反応率が薄まるため<b>オーガニックの学習からは外して</b>評価します。</div></div>";
       h+=learnedCard(b.learned);
       if($("analysisBody")){ $("analysisBody").innerHTML=h; renderHintCards(); renderRankTable(); } // hintBody/rankBody生成後に描画
     });
@@ -2444,8 +2444,24 @@ export const DASHBOARD_HTML = `<!doctype html>
   ];
   function rankCatData(){ if(!ANALYSIS)return []; if(RANK_CAT==="post")return ANALYSIS.by_post||[]; if(RANK_CAT==="hour")return ANALYSIS.by_hour||[]; return ANALYSIS.by_type||[]; }
   function nameLabel(){ return RANK_CAT==="post"?"ポスト":RANK_CAT==="hour"?"時間":"型"; }
-  function adBadge(row){ return (RANK_CAT==="post" && row && row.promoted) ? " <span class='pill' style='background:var(--accent-bg);color:var(--accent-strong);font-size:11px'>広告</span>" : ""; }
-  function nameOf(row){ return RANK_CAT==="post"?(esc(row.body)+adBadge(row)+xLink(row.pid)):RANK_CAT==="hour"?(row.hour+"時台"):esc(row.hook_label||row.hook); }
+  // 広告マークのトグル（ポスト別のみ）。ONで「広告」バッジ（クリックで解除）、OFFで「広告にする」リンク。
+  function adToggle(row){
+    if(!(RANK_CAT==="post" && row && row.id)) return "";
+    return row.promoted
+      ? " <span class='pill' style='background:var(--accent-bg);color:var(--accent-strong);font-size:11px;cursor:pointer' title='クリックで広告マークを解除' onclick='togglePromoted("+row.id+",false)'>広告 ✕</span>"
+      : " <span class='note' style='font-size:11px;cursor:pointer;text-decoration:underline' onclick='togglePromoted("+row.id+",true)'>広告にする</span>";
+  }
+  function togglePromoted(id, on){
+    api("POST","/api/post/promoted",{account:ACC, post_id:id, on:on}).then(function(r){
+      if(r.body&&r.body.ok){
+        var bp=(ANALYSIS&&ANALYSIS.by_post)||[];
+        for(var i=0;i<bp.length;i++) if(bp[i].id===id) bp[i].promoted=on?1:0;
+        renderRankTable();
+        msg(on?"この投稿を「広告」に設定しました。オーガニックの学習からは外して評価します。":"「広告」マークを解除しました。");
+      } else { msg((r.body&&r.body.error)||"変更できませんでした。",false); }
+    });
+  }
+  function nameOf(row){ return RANK_CAT==="post"?(esc(row.body)+adToggle(row)+xLink(row.pid)):RANK_CAT==="hour"?(row.hour+"時台"):esc(row.hook_label||row.hook); }
   function sortVal(row,col){
     if(col==="__name"){ if(RANK_CAT==="hour")return row.hour; if(RANK_CAT==="post")return new Date(String(row.posted_at).replace(" ","T")+"Z").getTime(); return row.hook||""; }
     return (row[col]!=null)?row[col]:-1;

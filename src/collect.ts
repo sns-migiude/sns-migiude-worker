@@ -171,9 +171,23 @@ async function collectMetricsForAccount(
         orgEr = oEng / orgImp;
       }
       if (m.promoted && (m.promoted.impressions ?? 0) > 0) {
+        // ① promoted_metrics が直接取れた場合はそれを使う（Ads API寄りで取れる権限のとき）。
         promoImp = m.promoted.impressions ?? 0;
         const pEng = (m.promoted.likes ?? 0) + (m.promoted.retweets ?? 0) + ((m.promoted.replies ?? 0) * avgW);
         promoEr = (promoImp ?? 0) > 0 ? pEng / (promoImp as number) : 0;
+      } else if (m.organic && orgImp != null && orgImp > 0) {
+        // ② promoted_metrics が空でも、organic が取れていれば「広告分 ＝ public − organic」で逆算する。
+        //    public = organic + promoted（Xの定義）。ブースト/正規広告どちらでも organic さえ取れれば検出できる。
+        //    スナップショットは同一取得なので差＝広告分。ノイズ回避に下限（5以上かつpublicの2%以上）を設ける。
+        const pImp = (m.impressions ?? 0) - orgImp;
+        if (pImp >= 5 && pImp >= (m.impressions ?? 0) * 0.02) {
+          promoImp = pImp;
+          const pLikes = Math.max(0, (m.likes ?? 0) - (m.organic.likes ?? 0));
+          const pRt = Math.max(0, (m.retweets ?? 0) - (m.organic.retweets ?? 0));
+          const pReplies = Math.max(0, (m.replies ?? 0) - (m.organic.replies ?? 0)) * avgW;
+          const pEng = pLikes + pRt + pReplies; // quotes/bookmarksはorganic帰属＝広告分は0扱い（内訳APIに無いため）
+          promoEr = pEng / pImp;
+        }
       }
       const ageHours = (Date.now() - parseSqlUtc(post.posted_at)) / 3600_000;
       const settled = ageHours >= SETTLE_HOURS ? 1 : 0;
@@ -189,6 +203,7 @@ async function collectMetricsForAccount(
   const histRows = await env.DB.prepare(
     `SELECT COALESCE(m.org_er_raw, m.er_raw) AS er FROM post_metrics m JOIN posts p ON p.id = m.post_id
       WHERE m.account_id = ? AND m.settled = 1 AND COALESCE(m.org_er_raw, m.er_raw) > 0 AND m.impressions > 0
+        AND NOT (COALESCE(p.promoted, 0) = 1 AND m.org_er_raw IS NULL) -- 広告で薄まった総ERは基準から除外
         AND p.posted_at >= datetime('now', ?)
         AND m.fetched_at = (SELECT MAX(m2.fetched_at) FROM post_metrics m2 WHERE m2.post_id = p.id AND m2.settled = 1)`
   ).bind(account.id, `-${BASELINE_WINDOW_DAYS} days`).all<{ er: number }>().catch(() => ({ results: [] as Array<{ er: number }> }));

@@ -192,8 +192,9 @@ interface RawTweet {
 
 // 最大100件ずつ取得。non_public/organic/promoted は自分のポスト・30日以内のみ有効で、
 // プラン/権限によっては403/400になるため、段階的にフィールドを落として再試行する：
-//   ①public+non_public+organic+promoted → ②public+non_public → ③publicのみ
-// （organic/promoted＝広告内訳。promoted_metricsは広告に使われたポストにだけ付く＝広告の自動判別）
+//   ①public+non_public+organic+promoted → ②+organic(promoted落とす) → ③+non_public → ④publicのみ
+// （organic/promoted＝広告内訳。promoted_metricsはAds API寄りで取れない権限が多いため、
+//   promotedがダメでも organic は残す＝オーガニック学習を守る。②のレベルがその保険。）
 export async function fetchTweetMetrics(
   creds: XCreds,
   tweetIds: string[],
@@ -205,10 +206,11 @@ export async function fetchTweetMetrics(
 
   const LEVELS = [
     "public_metrics,non_public_metrics,organic_metrics,promoted_metrics",
+    "public_metrics,non_public_metrics,organic_metrics",
     "public_metrics,non_public_metrics",
     "public_metrics",
   ];
-  const level = fieldLevel ?? (includeNonPublic ? 0 : 2);
+  const level = fieldLevel ?? (includeNonPublic ? 0 : LEVELS.length - 1);
   const url = "https://api.x.com/2/tweets";
   const params = { ids: tweetIds.join(","), "tweet.fields": LEVELS[level] };
   const auth = await oauthHeader(creds, "GET", url, params);
@@ -218,7 +220,7 @@ export async function fetchTweetMetrics(
   const bodyText = await res.text();
 
   if (!res.ok) {
-    if (level < 2 && (res.status === 403 || res.status === 400)) {
+    if (level < LEVELS.length - 1 && (res.status === 403 || res.status === 400)) {
       console.log(`[xapi] metrics fields level${level} 不可(${res.status})→level${level + 1}で再試行`);
       return fetchTweetMetrics(creds, tweetIds, includeNonPublic, level + 1);
     }

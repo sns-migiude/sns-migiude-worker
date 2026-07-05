@@ -146,6 +146,10 @@ async function learnForAccount(env: Env, account: Account): Promise<boolean> {
        FROM posts p
        JOIN post_metrics m ON m.post_id = p.id
       WHERE p.account_id = ? AND m.settled = 1 AND COALESCE(m.org_er_raw, m.er_raw) IS NOT NULL
+        -- 広告に使った投稿で、オーガニック内訳が取れていないもの（総ER＝広告で薄まる）は
+        -- オーガニック学習から除外＝広告が学習を汚さない（手動「広告」マークが実際に効く配線）。
+        -- 内訳が取れている広告投稿は org_er_raw を使うのでOK。
+        AND NOT (COALESCE(p.promoted, 0) = 1 AND m.org_er_raw IS NULL)
         AND m.fetched_at = (
           SELECT MAX(m2.fetched_at) FROM post_metrics m2
            WHERE m2.post_id = p.id AND m2.settled = 1
