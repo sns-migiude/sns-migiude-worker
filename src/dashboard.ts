@@ -2422,6 +2422,12 @@ export const DASHBOARD_HTML = `<!doctype html>
       if(s.reply_classified>=5) h+="<div class='note' style='margin-top:8px'>他の人からのリプの中身（ポジ/ネガ）を反応率に反映しています。ポジは少し高め・ネガは少し低めに評価（±20%・自分のリプは除外）。件数が少ないうちは反映しません。</div>";
       // オーガニック/広告の反応率の内訳（広告に使った投稿がある期間だけ表示）
       var bd=s.breakdown||{};
+      // 診断用：オーガニック内訳が取れている投稿の割合。0件が続く場合、Xのアカウント/アプリ側で
+      // 内訳データ(organic_metrics)が許可されていない可能性がある（広告判定が原理的に働かない）。
+      if(s.posts>0){
+        var odp=bd.organic_data_posts||0;
+        h+="<div class='note' style='margin-top:8px'>オーガニック内訳を取得できた投稿："+odp+" / "+s.posts+"件"+(odp===0?"（0件が続く場合、広告の自動判別がまだ動いていない可能性があります）":"")+"</div>";
+      }
       if(bd.promoted_posts>0 && (bd.organic||bd.promoted)){
         h+="<div style='margin-top:12px;border-top:1px solid var(--border);padding-top:12px'>";
         h+="<div class='row' style='justify-content:space-between;align-items:center;margin-bottom:8px'><b>オーガニック / 広告の内訳</b><span class='pill'>この期間 広告 "+bd.promoted_posts+"本</span></div>";

@@ -67,7 +67,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.27";
+const CODE_VERSION = "1.28";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -1861,8 +1861,12 @@ export default {
       const orgRows = rows.filter((r) => r.org_impressions != null && (r.org_impressions ?? 0) > 0);
       const promoRows = rows.filter((r) => r.promo_impressions != null && (r.promo_impressions ?? 0) > 0);
       const promotedPosts = rows.filter((r) => (r.promoted ?? 0) === 1).length;
+      // オーガニック内訳がそもそも取れているか（X側の権限/プランで organic_metrics が返らないと
+      // 広告の自動判別自体が原理的に動かないため、会員の画面で直接切り分けられるようにする診断値）。
+      const orgDataPosts = rows.filter((r) => r.org_impressions != null).length;
       const breakdown = {
         promoted_posts: promotedPosts, // 広告に使った投稿数（期間内）
+        organic_data_posts: orgDataPosts, // オーガニック内訳を取得できた投稿数（期間内・全投稿対象）
         organic: orgRows.length ? {
           n: orgRows.length,
           avg_impressions: Math.round(avg(orgRows.map((r) => num(r.org_impressions)))),
