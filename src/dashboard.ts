@@ -2512,6 +2512,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     var cols=[{key:"__name",label:nameLabel()}];
     if(RANK_CAT!=="post") cols.push({key:"n",label:"本数"});
     for(var k=0;k<RANK_COLS.length;k++) cols.push(RANK_COLS[k]);
+    if(RANK_CAT==="post") cols.push({key:"star",label:"自己評価"}); // 会員の★（末尾列・クリックで付け外し）
     var h="<div class='rankwrap'><table class='ranktbl'><tr>";
     cols.forEach(function(c){ var on=c.key===RANK_SORT.col; h+="<th class='"+(on?"on":"")+"' onclick=\\"rankSort('"+c.key+"')\\">"+esc(c.label)+(on?(RANK_SORT.dir<0?" ▼":" ▲"):"")+"</th>"; });
     h+="</tr>";
@@ -2520,6 +2521,7 @@ export const DASHBOARD_HTML = `<!doctype html>
       h+="<tr><td>"+nameOf(row)+"</td>";
       if(RANK_CAT!=="post") h+="<td>"+comma(row.n)+"</td>";
       RANK_COLS.forEach(function(c){ var v=row[c.key]; var cell = (c.dash0 && !v) ? "-" : (c.pct?((v!=null?v:0)+"%"):comma(v||0)); h+="<td>"+cell+"</td>"; });
+      if(RANK_CAT==="post") h+="<td style='white-space:nowrap'>"+pStarSpans(row.id,(row.star!=null?row.star:0),"rank")+"</td>";
       h+="</tr>";
     });
     h+="</table></div>";
@@ -3177,6 +3179,43 @@ export const DASHBOARD_HTML = `<!doctype html>
   function postedStat(label,val){
     return "<div style='min-width:54px'><div class='note' style='font-size:11px'>"+esc(label)+"</div><div style='font-size:16px;font-weight:600'>"+(val==null?"–":comma(val))+"</div></div>";
   }
+  // ── 投稿済みポストへの自己評価（★1〜5・学習用）。sched（投稿済みタブ）と rank（ポスト別テーブル）で共用。
+  //    もう一度同じ★でrating=0（取り消し）。承認待ちの評価(tRate)とは別API（/star）で、状態遷移もカウンタも動かない。
+  var POSTED_STARS={}; // post_id -> 現在の★（0=未評価）。取り消し判定に使う。
+  function pStarWrapId(id,src){ return "pst_"+src+"_"+id; }
+  function pStarSpans(id,cur,src){
+    cur=cur||0; POSTED_STARS[id]=cur;
+    var s="<span class='stars' id='"+pStarWrapId(id,src)+"'>";
+    for(var n=1;n<=5;n++){ s+="<span class='star"+(n<=cur?" on":"")+"' onmouseover='pStarHover("+id+","+n+",\\""+src+"\\")' onmouseout='pStarHover("+id+",-1,\\""+src+"\\")' onclick='pStar("+id+","+n+",\\""+src+"\\")'>★</span>"; }
+    s+="</span>";
+    return s;
+  }
+  function pStarHover(id,n,src){
+    var wrap=$(pStarWrapId(id,src)); if(!wrap) return;
+    var cur=(n<0)?(POSTED_STARS[id]||0):n; // マウスアウト(-1)は現在値に戻す
+    var stars=wrap.querySelectorAll(".star");
+    for(var i=0;i<stars.length;i++){ stars[i].classList.toggle("on",(i+1)<=cur); }
+  }
+  function pStar(id,n,src){
+    var cur=POSTED_STARS[id]||0;
+    var rating=(n===cur)?0:n; // 同じ★をもう一度＝取り消し
+    api("POST","/api/posts/"+id+"/star",{rating:rating}).then(function(r){
+      if(r.body&&r.body.ok){
+        POSTED_STARS[id]=rating;
+        msg(rating===0?"評価を取り消しました。"
+          :rating===5?"★5＝お手本として学習します。"
+          :rating===4?"★4＝良い例として学習します。"
+          :rating===3?"★3＝記録しました（AIには渡しません）。"
+          :"★"+rating+"＝避けたい例として学習します。");
+        if(src==="sched"){ loadScheduled(); }
+        else if(src==="rank"){
+          var bp=(ANALYSIS&&ANALYSIS.by_post)||[];
+          for(var i=0;i<bp.length;i++){ if(bp[i].id===id) bp[i].star=(rating===0?null:rating); }
+          renderRankTable();
+        }
+      } else { msg((r.body&&r.body.error)||"評価を保存できませんでした。",false); }
+    });
+  }
   function loadScheduled(){
     api("GET","/api/status?account="+ACC).then(function(r){
       var q=(r.body&&r.body.next_up)||[]; var po=(r.body&&r.body.recently_posted)||[];
@@ -3209,7 +3248,8 @@ export const DASHBOARD_HTML = `<!doctype html>
           cInfo.style.display="block";
         } else { cInfo.style.display="none"; }
       }
-      $("posted").innerHTML = po.length ? po.map(function(p){
+      var postedIntro = "<div class='note' style='margin-bottom:10px;line-height:1.7'>投稿に★を付けると、AIの学習に使われます。<b>★5＝お手本</b>（AIが最優先でまねる）／<b>★4＝良い例</b>／<b>★3＝ふつう</b>（記録のみ）／<b>★2・★1＝避けたい例</b>。もう一度同じ★を押すと取り消せます。</div>";
+      $("posted").innerHTML = po.length ? (postedIntro + po.map(function(p){
         var t=fmtJst(p.posted_at);
         var h="<div class='card'>";
         h+="<div class='row' style='justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px'>";
@@ -3226,9 +3266,10 @@ export const DASHBOARD_HTML = `<!doctype html>
         } else {
           h+="<div class='note' style='margin-top:8px;border-top:1px solid var(--border);padding-top:8px'>反応はまだ集計されていません（毎日自動で集計されます）。</div>";
         }
+        h+="<div class='row' style='align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap'><span class='note'>この投稿の自己評価：</span>"+pStarSpans(p.id,(p.star!=null?p.star:0),"sched")+"</div>";
         h+="</div>";
         return h;
-      }).join("") : "<p class='note'>まだ投稿はありません。投稿が出ると、ここに反応とあわせて並びます。</p>";
+      }).join("")) : "<p class='note'>まだ投稿はありません。投稿が出ると、ここに反応とあわせて並びます。</p>";
       var fa=(r.body&&r.body.failed)||[];
       if ($("failedWrap")) $("failedWrap").style.display = fa.length?"block":"none";
       if ($("failed")) $("failed").innerHTML = fa.map(function(p){

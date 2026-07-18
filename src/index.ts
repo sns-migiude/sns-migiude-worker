@@ -67,7 +67,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.28";
+const CODE_VERSION = "1.29";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -492,6 +492,14 @@ async function handleStatus(env: Env, accountId: string): Promise<Response> {
     `SELECT id, body, reply_text, error, created_at FROM posts
       WHERE account_id = ? AND status = 'failed' ORDER BY created_at DESC LIMIT 20`
   ).bind(accountId).all();
+  // 投稿済みへの自己評価(★)。post_id→rating で引けるようにする。テーブル未整備の古いDBでも一覧を死なせない（best-effort）。
+  const starMap = new Map<number, number>();
+  try {
+    const sf = await env.DB.prepare(
+      `SELECT post_id, rating FROM sample_feedback WHERE account_id = ? AND kind = 'post_rate'`
+    ).bind(accountId).all<{ post_id: number; rating: number }>();
+    for (const r of sf.results ?? []) { if (r.post_id != null) starMap.set(r.post_id, r.rating); }
+  } catch { /* post_rate未整備 */ }
   const acc = await env.DB.prepare(
     `SELECT daily_frequency, cycle_days FROM accounts WHERE id = ?`
   ).bind(accountId).first<{ daily_frequency: number; cycle_days: number }>();
@@ -518,7 +526,7 @@ async function handleStatus(env: Env, accountId: string): Promise<Response> {
     account: accountId,
     counts: Object.fromEntries(counts.results.map((c) => [c.status, c.n])),
     next_up: withImageType(nextUp.results),
-    recently_posted: recent.results,
+    recently_posted: (recent.results as Array<{ id: number }>).map((p) => ({ ...p, star: starMap.get(p.id) ?? null })),
     not_adopted: notAdopted.results,
     failed: failed.results,
     post_slots: await getAccountSlots(env, accountId),
@@ -1040,6 +1048,39 @@ export default {
       // ★1-4＝フィードバックのみ（投稿しない・本数に数えない）
       await env.DB.prepare(`UPDATE posts SET status = 'rated' WHERE id = ?`).bind(id).run();
       return json({ ok: true, rated: id, rating, pass: false });
+    }
+    // 投稿済みポストへの自己評価（★1〜5・学習用）。承認待ち専用の /rate とは別物＝状態遷移もカウンタ加算も一切しない。
+    //   sample_feedback に kind='post_rate' で保存。1ポスト1評価・上書き可（UNIQUE無し→DELETE→INSERTをbatchで）。
+    //   rating=0＝評価なしに戻す（取り消し）。★5でも star5_count は加算しない（自動投稿解放条件に影響させない）。
+    const starMatch = url.pathname.match(/^\/api\/posts\/(\d+)\/star$/);
+    if (req.method === "POST" && starMatch) {
+      const b = (await req.json().catch(() => null)) as { rating?: number } | null;
+      const rating = Math.max(0, Math.min(5, Math.round(Number(b?.rating ?? 0))));
+      const id = Number(starMatch[1]);
+      const post = await env.DB.prepare(
+        `SELECT account_id, body FROM posts WHERE id = ? AND status = 'posted'`
+      )
+        .bind(id)
+        .first<{ account_id: string; body: string }>();
+      if (!post) return json({ error: "該当する投稿がありません" }, 404);
+      try {
+        if (rating === 0) {
+          // 取り消し＝DELETEのみ（評価なしに戻す）。
+          await env.DB.prepare(
+            `DELETE FROM sample_feedback WHERE account_id = ? AND post_id = ? AND kind = 'post_rate'`
+          ).bind(post.account_id, id).run();
+        } else {
+          // 上書き＝DELETE→INSERT（before_body＝評価時点の本文スナップショット。reply_textは含めない）。
+          await env.DB.batch([
+            env.DB.prepare(`DELETE FROM sample_feedback WHERE account_id = ? AND post_id = ? AND kind = 'post_rate'`).bind(post.account_id, id),
+            env.DB.prepare(`INSERT INTO sample_feedback (account_id, post_id, kind, rating, before_body) VALUES (?, ?, 'post_rate', ?, ?)`).bind(post.account_id, id, rating, post.body),
+          ]);
+        }
+      } catch (e) {
+        console.error(`[${post.account_id}] sample_feedback(post_rate)保存失敗: ${e instanceof Error ? e.message : e}`);
+        return json({ ok: false, error: "評価を保存できませんでした。時間をおいてもう一度お試しください。" }, 500);
+      }
+      return json({ ok: true, rated: id, rating });
     }
     // アカウント設定の部分更新（指定した項目だけ・他は維持）
     if (req.method === "POST" && url.pathname === "/api/account/update") {
@@ -1937,6 +1978,14 @@ export default {
       }
       const by_hour = [...byHourMap.entries()].map(([hour, rs]) => ({ hour, ...aggMetrics(rs) }));
 
+      // 投稿済みへの自己評価(★)。post_id→rating。テーブル未整備でも分析は死なせない（best-effort）。
+      const starMap = new Map<number, number>();
+      try {
+        const sf = await env.DB.prepare(
+          `SELECT post_id, rating FROM sample_feedback WHERE account_id = ? AND kind = 'post_rate'`
+        ).bind(acc).all<{ post_id: number; rating: number }>();
+        for (const r of sf.results ?? []) { if (r.post_id != null) starMap.set(r.post_id, r.rating); }
+      } catch { /* post_rate未整備 */ }
       // ポスト別（1ポスト＝1行・生の値。多すぎないよう直近100件）
       const by_post = rows.slice(0, 100).map((r) => ({
         id: r.id, hook: r.hook, body: r.body.slice(0, 80), posted_at: r.posted_at, pid: r.pid,
@@ -1946,6 +1995,7 @@ export default {
         promoted: (r.promoted ?? 0) === 1, // 広告に使った投稿（自動判別）
         promo_er_pct: r.promo_er_raw != null ? erPct(r.promo_er_raw) : null, // 広告分の反応率（あれば）
         org_er_pct: r.org_er_raw != null ? erPct(r.org_er_raw) : null,       // オーガニック分の反応率（あれば）
+        star: starMap.get(r.id) ?? null, // 会員の自己評価★（未評価はnull）
       }));
 
       // 改善カード（行動に移せる「次の学習サイクルの指針」）＋ 補足インサイト。

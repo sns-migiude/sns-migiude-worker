@@ -128,32 +128,74 @@ async function ensureGems(env: Env, accountId: string, claudeKey: string): Promi
 
 // 添削の差分（before→after）と★評価を読み込んで、生成の指針にする。
 // テーブル未作成でも生成は止めない（best-effort）。
+//   editPairs＝添削(kind='edit')の差分／liked・avoid＝良い例・避ける例／exemplars＝★5お手本の実投稿。
+//   ★は2系統：投稿済みへの自己評価(kind='post_rate')＝主／承認待ち時代の★(kind='rate')＝旧。
+//   同じ post_id に post_rate があれば旧 rate はスキップ（二重計上しない）。★3(post_rate)は記録のみでAIに渡さない。
 async function loadFeedback(
   env: Env,
   accountId: string
-): Promise<{ editPairs: { before: string; after: string }[]; liked: string[]; avoid: string[] }> {
+): Promise<{ editPairs: { before: string; after: string }[]; liked: string[]; avoid: string[]; exemplars: string[] }> {
   try {
+    // 添削(edit)＋承認待ち時代の★(rate)。post_rate 混入で LIMIT を食い潰さないよう kind を絞る。
     const rows = await env.DB.prepare(
-      `SELECT kind, rating, before_body, after_body FROM sample_feedback
-       WHERE account_id = ? ORDER BY created_at DESC LIMIT 40`
+      `SELECT post_id, kind, rating, before_body, after_body FROM sample_feedback
+       WHERE account_id = ? AND kind IN ('edit','rate') ORDER BY created_at DESC LIMIT 40`
     )
       .bind(accountId)
-      .all<{ kind: string; rating: number | null; before_body: string | null; after_body: string | null }>();
+      .all<{ post_id: number | null; kind: string; rating: number | null; before_body: string | null; after_body: string | null }>();
+
+    // 投稿済みポストへの自己評価(post_rate)。新しい順で最大100件。テーブル未整備でも止めない。
+    let prRows: Array<{ post_id: number | null; rating: number | null; before_body: string | null }> = [];
+    try {
+      const pr = await env.DB.prepare(
+        `SELECT post_id, rating, before_body FROM sample_feedback
+         WHERE account_id = ? AND kind = 'post_rate' ORDER BY created_at DESC LIMIT 100`
+      )
+        .bind(accountId)
+        .all<{ post_id: number | null; rating: number | null; before_body: string | null }>();
+      prRows = pr.results ?? [];
+    } catch { prRows = []; }
+    // post_rate がある post_id は、旧 rate 行で二重に数えない（新しい post_rate を優先）。
+    const prPostIds = new Set<number>();
+    for (const r of prRows) { if (r.post_id != null) prPostIds.add(r.post_id); }
+
     const editPairs: { before: string; after: string }[] = [];
-    const liked: string[] = [];
-    const avoid: string[] = [];
     for (const r of rows.results) {
       if (r.kind === "edit" && r.before_body && r.after_body && editPairs.length < 8) {
         editPairs.push({ before: r.before_body, after: r.after_body });
-      } else if (r.kind === "rate" && r.before_body) {
-        // ★5＝採用（良い例）／★1-2＝はっきりダメ（避ける例）。★3-4は不採用だが強い信号にはしない。
-        if ((r.rating ?? 0) === 5 && liked.length < 5) liked.push(r.before_body);
-        else if ((r.rating ?? 0) <= 2 && avoid.length < 5) avoid.push(r.before_body);
       }
     }
-    return { editPairs, liked, avoid };
+
+    // お手本＝post_rate★5の実投稿（新しい順・最大8件・各800字で切り詰め・合計6000字まで）。
+    const exemplars: string[] = [];
+    let exBudget = 6000;
+    for (const r of prRows) {
+      if ((r.rating ?? 0) !== 5 || !r.before_body) continue;
+      if (exemplars.length >= 8) break;
+      const s = r.before_body.length > 800 ? r.before_body.slice(0, 800) : r.before_body;
+      if (exBudget - s.length < 0) break;
+      exBudget -= s.length;
+      exemplars.push(s);
+    }
+
+    // liked/avoid の合成（決定的）。いずれも新しい順・最大6件。★3(post_rate)は入れない（記録のみ）。
+    const prStar4 = prRows.filter((r) => (r.rating ?? 0) === 4 && r.before_body).map((r) => r.before_body!);
+    const prStar1 = prRows.filter((r) => (r.rating ?? 0) === 1 && r.before_body).map((r) => r.before_body!);
+    const prStar2 = prRows.filter((r) => (r.rating ?? 0) === 2 && r.before_body).map((r) => r.before_body!);
+    const rate5: string[] = []; // 旧 rate★5（post_rate のない post_id のみ）
+    const rateLow: string[] = []; // 旧 rate★2以下（同上）
+    for (const r of rows.results) {
+      if (r.kind !== "rate" || !r.before_body) continue;
+      if (r.post_id != null && prPostIds.has(r.post_id)) continue; // post_rate があればスキップ
+      if ((r.rating ?? 0) === 5) rate5.push(r.before_body);
+      else if ((r.rating ?? 0) <= 2) rateLow.push(r.before_body);
+    }
+    const liked = [...prStar4, ...rate5].slice(0, 6);
+    const avoid = [...prStar1, ...prStar2, ...rateLow].slice(0, 6); // ★1が先頭＝最も避ける
+
+    return { editPairs, liked, avoid, exemplars };
   } catch {
-    return { editPairs: [], liked: [], avoid: [] };
+    return { editPairs: [], liked: [], avoid: [], exemplars: [] };
   }
 }
 
@@ -208,20 +250,30 @@ export async function generateDrafts(
   if (!pack) throw new Error(`[${account.id}] プロンプト本体を取得できません（本部不通・キャッシュ無し）。次回に回します。`);
 
   const corpus = await loadCorpus(env, account.id);
+  // 添削差分・★評価・お手本(★5)を先に読む。exemplars を「かぶらせない対象(recent)」に合流させるため前倒し。
+  const fb = await loadFeedback(env, account.id);
   const voiceSamples = corpus.voice_samples ?? ""; // 過去ポスト（連携/再学習）
   const voiceEdits = corpus.voice_edits ?? "";     // 添削ぶん（会員が手直し承認した文章）
   const winning = corpus.winning_patterns ?? "";
   const direction = corpus.direction ?? ""; // 発信の方向性（何を・誰に・どんなスタンスで）
-  await ensureGems(env, account.id, claudeKey); // 素材から話題の種を配線（空の会員のみ・1回）＝ネタ被り対策の要
-  // 1本あたり少なめに絞って回す（種を早く食い潰さない）。使った種は used_count を回して次回は別の種を出す。
-  const gemPicks = await pickGems(env, account.id, Math.max(count + 2, 4));
-  const gems = gemPicks.map((g) => g.content);
-  await markGemsUsed(env, account.id, gemPicks.map((g) => g.id));
+  // URL誘導モード＝飛び先の説明に忠実に書く。話題の種・ネタ元素材・自動拡張は使わない（無関係な素材の
+  // 混入や、飛び先の中身の捏造＝飛躍を防ぐ。文体サンプルは通常どおり使う）。指示側(instructions)に説明が入る。
+  const urlMode = genOpts?.pattern === "url";
+  let gems: string[] = [];
+  if (!urlMode) {
+    await ensureGems(env, account.id, claudeKey); // 素材から話題の種を配線（空の会員のみ・1回）＝ネタ被り対策の要
+    // 1本あたり少なめに絞って回す（種を早く食い潰さない）。使った種は used_count を回して次回は別の種を出す。
+    const gemPicks = await pickGems(env, account.id, Math.max(count + 2, 4));
+    gems = gemPicks.map((g) => g.content);
+    await markGemsUsed(env, account.id, gemPicks.map((g) => g.id));
+  }
   const recent = await loadRecentBodies(env, account.id, 20, 250); // 直近20日（最大250件）＝ネタ被り厳禁の対象
   // 型トレーニングの既出サンプルはpostsに保存されないので、明示で渡された本文を被り対象に合流（先頭＝最優先で避ける）
   if (avoidBodies && avoidBodies.length) {
     for (const a of avoidBodies) { const t = (a || "").trim(); if (t) recent.unshift(t); }
   }
+  // ★5お手本も「かぶらせない対象」に入れる＝お手本の焼き直し（クローン）は類似度フィルタで自動的に落ちる。
+  for (const ex of fb.exemplars) { const t = (ex || "").trim(); if (t) recent.push(t); }
   // X有料プランなら長文ポストを許可。無料=140字（重み280）／有料=最大1000字（重み2000）。
   const premiumRow = await env.DB.prepare(
     `SELECT value_json AS v FROM individual_profile WHERE account_id = ? AND key = 'x_premium'`
@@ -249,19 +301,22 @@ export async function generateDrafts(
     ? 280
     : (pat ? (pat.long ? weightMax : 280) : weightMax);
   // ネタ元データ（会員アップロードの内容素材）。総量を約18000字に抑えてサンプル。テーブル未作成でも止めない。
+  // URL誘導モードでは注入しない（飛び先の説明に集中させ、無関係な素材の混入＝ズレを防ぐ）。
   let neta = "";
-  try {
-    const nrows = await env.DB.prepare(
-      `SELECT content FROM neta_files WHERE account_id = ? ORDER BY created_at DESC`
-    )
-      .bind(account.id)
-      .all<{ content: string }>();
-    for (const r of nrows.results) {
-      if (neta.length > 18000) break;
-      neta += (neta ? "\n\n---\n\n" : "") + r.content;
-    }
-    if (neta.length > 18000) neta = neta.slice(0, 18000);
-  } catch { /* neta_files未作成 */ }
+  if (!urlMode) {
+    try {
+      const nrows = await env.DB.prepare(
+        `SELECT content FROM neta_files WHERE account_id = ? ORDER BY created_at DESC`
+      )
+        .bind(account.id)
+        .all<{ content: string }>();
+      for (const r of nrows.results) {
+        if (neta.length > 18000) break;
+        neta += (neta ? "\n\n---\n\n" : "") + r.content;
+      }
+      if (neta.length > 18000) neta = neta.slice(0, 18000);
+    } catch { /* neta_files未作成 */ }
+  }
   // 学習データの自動拡張（ON=範囲を超えてAIが内容も考える / OFF=範囲を出ない）
   const aeRow = await env.DB.prepare(
     `SELECT value_json AS v FROM individual_profile WHERE account_id = ? AND key = 'auto_expand'`
@@ -309,6 +364,15 @@ export async function generateDrafts(
     const e = voiceEdits.length > 20000 ? voiceEdits.slice(-20000) : voiceEdits;
     system.push({ text: `## あなたが手直し・承認した文章（文体の特に重要な手本。最優先で寄せる）\n${e}` });
   }
+  if (fb.exemplars.length) {
+    // ★5お手本＝本人が「これが理想」と認めた実投稿。書き方・構成の最優先の手本（題材の使い回しは禁止）。
+    system.push({
+      text:
+        `## お手本ポスト（この会員が★5を付けた実際の投稿。文体・構成・切り口の最優先の手本）\n` +
+        `以下は本人が「これが理想」と認めた実投稿。書き方・リズム・構成はここに最優先で寄せる。ただし題材の使い回しはしない（同じ内容の書き直し・焼き直しは禁止。あくまで“書き方”の手本）。\n` +
+        fb.exemplars.join("\n---\n"),
+    });
+  }
   if (direction.trim()) {
     // 文体は voice_samples が正典。ここは「何を・誰に・どんなスタンスで」の内容の方向性のみ。
     system.push({
@@ -322,11 +386,15 @@ export async function generateDrafts(
       text: `## ネタ元データ（会員が用意した「内容の素材」。ここから題材・主張・具体例を拾って書く。文体は上のサンプルが正典で、ここは内容のみ）\n${neta}`,
     });
   }
-  // 内容の範囲ポリシー（自動拡張のON/OFF）
+  // 内容の範囲ポリシー（自動拡張のON/OFF）。
+  // URL誘導モードは会員のON/OFF設定に関わらず「厳守」＝飛び先の説明を超えて敷衍しない（飛び先は確認できず、
+  // 書いていない数字・成果・具体を作ると"飛躍"になるため）。指示側で渡す誘導先の説明・タイトルだけを根拠にする。
   system.push({
-    text: autoExpand
-      ? `## 内容の範囲：自動拡張ON\nネタ元データ・方向性を起点に、関連する内容はAIがある程度ふくらませて書いてよい（方向性・スタンスは守る。事実の捏造はしない）。`
-      : `## 内容の範囲：自動拡張OFF（厳守）\nネタ元データ・方向性に書かれている範囲を超えない。書かれていない新しい主張・エピソード・固有の事実は作らない。素材の中から書く。`,
+    text: urlMode
+      ? `## 内容の範囲：URL誘導（厳守）\n下の指示にある「誘導先の説明・タイトル」に書かれている範囲だけで書く。説明に無い数字・実績・成果・断定・具体を新しく作らない（飛び先ページは読めないので、書いていないことを事実のように言わない＝飛躍・煽りの禁止）。説明が短いときは無理に具体を盛らず、説明された価値をそのまま引きにする。`
+      : autoExpand
+        ? `## 内容の範囲：自動拡張ON\nネタ元データ・方向性を起点に、関連する内容はAIがある程度ふくらませて書いてよい（方向性・スタンスは守る。事実の捏造はしない）。`
+        : `## 内容の範囲：自動拡張OFF（厳守）\nネタ元データ・方向性に書かれている範囲を超えない。書かれていない新しい主張・エピソード・固有の事実は作らない。素材の中から書く。`,
   });
 
   // 型別の「実行ノート」（微調整）：その型を書くときの会員の書き方の好み（cycleがHaikuで要約・蓄積）。
@@ -352,7 +420,7 @@ export async function generateDrafts(
   }
 
   // 添削の差分（AI初稿→会員の直し）と★評価を生成の指針に。差分学習＝最初から直された形で書く。
-  const fb = await loadFeedback(env, account.id);
+  // ※ fb は loadCorpus 直後で取得済み（exemplars を recent に合流させるため前倒し）。
   if (fb.editPairs.length) {
     const pairs = fb.editPairs
       .map((p, i) => `【例${i + 1}】\nAI初稿：${p.before}\n会員の直し：${p.after}`)

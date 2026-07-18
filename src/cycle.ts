@@ -713,7 +713,7 @@ async function replenishForAccount(env: Env, account: Account, dayspan = 0, src:
     // リンクタイトル・説明を渡して、1本目をその内容に沿った引きにする（飛び先はAIが読めないため）。
     const desc = chosenLink.desc || chosenLink.note || "";
     const titleLine = chosenLink.title ? `\n誘導先タイトル: ${chosenLink.title}` : "";
-    const descLine = desc ? `\n誘導先の説明: ${desc}（1本目はこの説明に沿った価値・引きにする。2本目はこのタイトル・説明に合うひと言＋URL）` : "";
+    const descLine = desc ? `\n誘導先の説明: ${desc}\n（1本目も2本目も、この説明に書かれている範囲だけで書く。説明に無い数字・成果・実績・具体・断定を新しく作らない＝飛び先を確認できないので飛躍・煽りは禁止。説明が短ければ無理に盛らず、書かれた価値をそのまま引きにする。言い回しは毎回変える）` : "\n（誘導先の説明が未入力。飛び先の中身を勝手に断定・具体化しない。会員の文体で、リンク先に続きがある、と自然に誘うにとどめる）";
     // 学習済み(url_affinity)があれば、クリック/CV実績で誘導スタイルを重み付け選択（床0.3で探索を残す）。未学習なら順番に回す。
     const urlAff = await loadUrlAffinity(env, account.id);
     let style: { label: string; angle: string };
