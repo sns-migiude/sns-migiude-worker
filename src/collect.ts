@@ -48,6 +48,9 @@ export async function ensurePromotedColumns(env: Env): Promise<void> {
       ]) { try { await env.DB.prepare(sql).run(); } catch { /* 既存列 */ } }
     }
     try { await env.DB.prepare(`ALTER TABLE posts ADD COLUMN promoted INTEGER NOT NULL DEFAULT 0`).run(); } catch { /* 既存列 */ }
+    // 投稿の孤児回収(B1)用。claim時に打刻する列。マイグレ未適用の会員DBでも claim が失敗して
+    // 投稿が壊れないよう、ここでも自己修復する（投稿path=postNext の claim 直前でも呼ぶ）。
+    try { await env.DB.prepare(`ALTER TABLE posts ADD COLUMN posting_started_at TEXT`).run(); } catch { /* 既存列 */ }
     _promoColsReady = true;
   } catch { /* PRAGMA不可でも収集は続行（各SQLはtry/COALESCEで吸収） */ }
 }

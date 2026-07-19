@@ -6,7 +6,7 @@
 // Claudeを無駄打ちしないよう、cycle_days周期＋在庫が尽きそうな時の緊急補充でゲートする。
 
 import { generateDrafts } from "./generate";
-import { loadActiveAccounts, loadAccount, resolveCreds, linkCode, tagUrl, trackedLink, randCode, getPublicUrl, type Account, type Env } from "./accounts";
+import { loadActiveAccounts, loadAccount, resolveCreds, linkCode, tagUrl, trackedLink, randCode, getPublicUrl, setConfig, type Account, type Env } from "./accounts";
 import { weightedLength } from "./xapi";
 import { nextQueueSlot } from "./schedule";
 import { TYPE_INSTRUCTIONS, CATALOG_KEYS, DEFAULT_ON, DEFAULT_ON_FREE, isLongType, PATTERNS, metaOf, URL_TYPE_INSTRUCTION, URL_STYLES, type PolicyId } from "./taxonomy";
@@ -910,17 +910,22 @@ export async function runCycleForAccount(env: Env, acc: Account): Promise<{ lear
       const generated = await replenishForAccount(env, acc); // 新しい学習で1日分（source=tool・設定中の指針があればここで反映）
       await clearFocus(env, acc.id); // 「次の学習サイクルの指針」は1サイクル限定＝ここで消費して自動解除（②の修正）
       await stampCycle(env, acc.id, `cycle turn learned=${learned} regen=${generated}`);
+      await env.DB.prepare(`DELETE FROM app_config WHERE key = ?`).bind(`last_gen_error:${acc.id}`).run().catch(() => {}); // 正常に回った＝直近の失敗記録を解除
       return { learned, generated };
     }
     // ── サイクル途中：在庫が1日分を切ったら緊急補充のみ（学習・作り直し・スタンプはしない＝サイクル日数は進む） ──
     const have = (await env.DB.prepare(stockCountSql(acc.approval_mode)).bind(acc.id).first<{ n: number }>())?.n ?? 0;
     if (have < acc.daily_frequency) {
       const generated = await replenishForAccount(env, acc); // そのサイクルの学習のまま1日分（source=tool）
+      await env.DB.prepare(`DELETE FROM app_config WHERE key = ?`).bind(`last_gen_error:${acc.id}`).run().catch(() => {}); // 緊急補充に成功＝直近の失敗記録を解除
       return { learned: false, generated };
     }
     return { learned: false, generated: 0 };
   } catch (e) {
     console.error(`[${acc.id}] サイクル失敗: ${e instanceof Error ? e.message : e}`);
+    // 下書きの自動作成が失敗したことを記録（会員ホームの異常カード用）。失敗しても本処理は落とさない。
+    await setConfig(env, `last_gen_error:${acc.id}`,
+      JSON.stringify({ at: new Date().toISOString(), msg: (e instanceof Error ? e.message : String(e)).slice(0, 300) })).catch(() => {});
     return null;
   }
 }

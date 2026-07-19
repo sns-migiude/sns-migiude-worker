@@ -21,6 +21,7 @@ import {
   xCreds,
   saveCreds,
   resolveCreds,
+  credsHealth,
   linkCode,
   getMemberUid,
   getConfig,
@@ -60,7 +61,7 @@ async function urlSampleInstr(env: Env, accountId: string, angle: string): Promi
   return `${URL_TYPE_INSTRUCTION}${a ? "\n" + a : ""}\n誘導先URL: [ここにURL]（飛ばし先URLが未登録です。設定で登録すると、その記事の内容に沿ったサンプルになります）`;
 }
 import { renderCardPng, presetTheme, CARD_PRESETS, CARD_FONTS, isImageType, normImageType, type CardTheme } from "./render";
-import { collectMetrics, collectReplies, collectForAccount, collectSinglePost } from "./collect";
+import { collectMetrics, collectReplies, collectForAccount, collectSinglePost, ensurePromotedColumns } from "./collect";
 import { runCycle, runCycleForAccount, generateSamples, regenerateForAccount, cancelQueuedForAccount, generateDaysForAccount, inventoryCap } from "./cycle";
 import { distillCardText } from "./generate";
 import { nextQueueSlot, reflowQueue, getAccountSlots, accountPrepHHMM, sqlUtc } from "./schedule";
@@ -68,7 +69,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.30";
+const CODE_VERSION = "1.31";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -270,8 +271,10 @@ async function postNext(
 
   // 二重投稿防止：この投稿を原子的に予約（queued→posting）。手動 /api/post-now と毎分cron が
   // 同時に走っても、予約を取れた1プロセスだけが投稿する。取れなければ他が処理中なのでスキップ。
+  // マイグレ未適用の会員DBでも posting_started_at 列を保証してから claim（列欠落で投稿が壊れるのを防ぐ）。
+  await ensurePromotedColumns(env).catch(() => {});
   const claim = await env.DB.prepare(
-    `UPDATE posts SET status = 'posting' WHERE id = ? AND status = 'queued'`
+    `UPDATE posts SET status = 'posting', posting_started_at = datetime('now') WHERE id = ? AND status = 'queued'`
   ).bind(next.id).run();
   if ((claim.meta.changes ?? 0) === 0) return { posted: false, detail: "already_claimed" };
 
@@ -305,7 +308,7 @@ async function postNext(
     }
     const tweetId = await createPost(creds, next.body, undefined, mediaIds);
     await env.DB.prepare(
-      `UPDATE posts SET status = 'posted', platform_post_id = ?, posted_at = datetime('now'), error = NULL
+      `UPDATE posts SET status = 'posted', platform_post_id = ?, posted_at = datetime('now'), posting_started_at = NULL, error = NULL
        WHERE id = ?`
     )
       .bind(tweetId, next.id)
@@ -334,6 +337,7 @@ async function postNext(
       `UPDATE posts SET
          retry_count = retry_count + 1,
          error = ?,
+         posting_started_at = NULL,
          status = CASE WHEN retry_count + 1 >= ? THEN 'failed' ELSE 'queued' END
        WHERE id = ?`
     )
@@ -342,6 +346,30 @@ async function postNext(
     console.error(`[${account.id}] 投稿失敗 post#${next.id}: ${msg}`);
     return { posted: false, detail: msg };
   }
+}
+
+// posting孤児の回収（B1）。原子的claim（status='posting'）の後にプロセスが強制終了すると、
+// status='posting' のまま永久に放置され、通常の投稿処理にもリトライにも載らなくなる。
+// 15分（通常の投稿＋カード画像レンダを大きく超える閾値）以上放置された 'posting' を queued に戻し、
+// 既存のリトライ経路（MAX_RETRY）に載せて復旧する。
+//   ①X投稿前に死＝再投稿で正しく復旧。
+//   ②X投稿後・DB更新前に死＝再投稿を試みるが、Xが同一本文の重複投稿を403で弾くため実際には二重投稿されず、
+//     catch側で retry_count を重ねて最終的に failed へ落ちる（会員が failed として気づける）。
+// retry_count はここでは増やさず既存値を維持し、上限超過分（retry_count >= MAX_RETRY）だけ failed に落とす。
+// 回収件数は console にログして観測可能にする（サイレントにしない）。
+async function recoverStuckPosting(env: Env): Promise<number> {
+  const res = await env.DB.prepare(
+    `UPDATE posts SET
+       posting_started_at = NULL,
+       status = CASE WHEN retry_count >= ? THEN 'failed' ELSE 'queued' END,
+       error = CASE WHEN retry_count >= ? THEN '投稿処理が途中で中断され、再試行の上限に達しました（自動回収）' ELSE error END
+     WHERE status = 'posting'
+       AND posting_started_at IS NOT NULL
+       AND posting_started_at < datetime('now', '-15 minutes')`
+  ).bind(MAX_RETRY, MAX_RETRY).run();
+  const n = res.meta.changes ?? 0;
+  if (n > 0) console.log(`[recover] posting孤児を回収: ${n}本（15分以上 'posting' のまま放置→queued/failedへ）`);
+  return n;
 }
 
 // 投稿枠：有効アカウントを順に、それぞれ1本ずつ投稿する。
@@ -463,6 +491,10 @@ async function handleStatus(env: Env, accountId: string): Promise<Response> {
   )
     .bind(accountId)
     .all<{ status: string; n: number }>();
+  // 直近24時間に実際に投稿できた本数（0＝投稿が止まっている検知に使う）。
+  const posted24 = (await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM posts WHERE account_id = ? AND status = 'posted' AND posted_at >= datetime('now','-1 day')`
+  ).bind(accountId).first<{ n: number }>().catch(() => null))?.n ?? 0;
   const nextUp = await env.DB.prepare(
     `SELECT id, body, reply_text, hook, not_before FROM posts
      WHERE account_id = ? AND status = 'queued'
@@ -526,6 +558,7 @@ async function handleStatus(env: Env, accountId: string): Promise<Response> {
   return json({
     account: accountId,
     counts: Object.fromEntries(counts.results.map((c) => [c.status, c.n])),
+    posted_24h: posted24, // 直近24hの投稿本数（0かつ在庫なし＝投稿停止の判定に使う）
     next_up: withImageType(nextUp.results),
     recently_posted: (recent.results as Array<{ id: number }>).map((p) => ({ ...p, star: starMap.get(p.id) ?? null })),
     not_adopted: notAdopted.results,
@@ -1235,12 +1268,15 @@ export default {
         }>();
       // オンボーディングの「連携済み」は“UIで連携したか（account_creds）”で判定。
       // 運営フォールバックのACCOUNTS_CREDSシークレットは数えない（リセットしやすく・体験が正確）。
-      const credsRow = await env.DB.prepare(
-        `SELECT 1 FROM account_creds WHERE account_id = ?`
-      )
-        .bind(acc)
-        .first();
-      const connected = !!credsRow;
+      // さらに credsHealth で「保存された連携を復号できるか」まで見る：復号できない（ok=false）なら
+      // 実質的に連携切れ＝連携し直しが必要なので connected=false に倒し、creds_error で理由を伝える。
+      const h = await credsHealth(env, acc);
+      const connected = h.exists && h.ok;
+      const credsError = h.exists && !h.ok; // 保存はあるが読めない（鍵ずれ/破損）＝静かに死んでいる状態
+      // 直近の下書き自動作成の失敗（cycle.ts が記録）。会員ホームの異常カード表示に使う。
+      let lastGenError: unknown = null;
+      const geRaw = await getConfig(env, `last_gen_error:${acc}`);
+      if (geRaw) { try { lastGenError = JSON.parse(geRaw); } catch { lastGenError = null; } }
       const voiceRow = await env.DB.prepare(
         `SELECT SUM(length(content)) AS n FROM corpus WHERE account_id = ? AND key IN ('voice_samples','voice_edits')`
       )
@@ -1298,6 +1334,8 @@ export default {
       return json({
         onboarded: row?.onboarded ? 1 : 0,
         connected,
+        creds_error: credsError, // 連携は保存されているのに復号できない（連携し直しが必要）
+        last_gen_error: lastGenError, // 直近の下書き自動作成の失敗（{at,msg}）。無ければ null
         has_voice: hasVoice,
         has_direction: dir,
         direction: dirRow?.content ?? "",
@@ -3254,6 +3292,10 @@ export default {
     const pullSlot = (env.HONBU_PULL_SLOT_JST ?? "17:00").trim();
     // 「準備」を初回投稿の何分前に回すか（既定30分）。会員ごとに最早スロットへ寄せる。
     const leadMin = parseInt(env.PREP_LEAD_MIN ?? "30", 10) || 30;
+
+    // 毎回：まず posting孤児を回収（15分以上 'posting' で放置された投稿を queued/failed に戻す）。
+    //   単一UPDATEで軽い。投稿処理の前に走らせ、回収した分をこの回のリトライに載せる。
+    await recoverStuckPosting(env).catch((e) => console.error(`posting孤児の回収に失敗: ${e instanceof Error ? e.message : e}`));
 
     // 毎回：期限が来た予約（not_before<=now）を各アカウント1本ずつ投稿（ゆらぎを尊重）
     await postSlotAllAccounts(env);

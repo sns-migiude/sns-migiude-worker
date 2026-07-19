@@ -226,6 +226,29 @@ export async function resolveCreds(env: Env, accountId: string): Promise<Account
   return allCreds(env)[accountId] ?? null;
 }
 
+// 鍵の健康診断（読み取り専用）：連携が保存されているか／それを復号できるか だけを返す。
+// resolveCreds 本体には触れず、「連携が壊れて静かに死んでいる」状態（＝復号失敗）を検知する用。
+//   exists : account_creds に行があるか（＝UIで一度でも連携したか）
+//   ok     : その creds_enc を復号・JSONパースできたか（false＝鍵ずれ/破損で読めない＝連携切れ扱い）
+export async function credsHealth(
+  env: Env,
+  accountId: string
+): Promise<{ exists: boolean; ok: boolean; has_x: boolean; has_claude: boolean }> {
+  const row = await env.DB.prepare(`SELECT creds_enc FROM account_creds WHERE account_id = ?`)
+    .bind(accountId)
+    .first<{ creds_enc: string }>()
+    .catch(() => null);
+  if (!row?.creds_enc) return { exists: false, ok: false, has_x: false, has_claude: false };
+  try {
+    const c = JSON.parse(
+      await decryptString(row.creds_enc, env.CREDS_KEY ?? env.API_TOKEN ?? env.LOGIN_PASSWORD ?? "")
+    ) as AccountCreds;
+    return { exists: true, ok: true, has_x: !!(c.x && c.x.apiKey && c.x.accessToken), has_claude: !!c.claudeKey };
+  } catch {
+    return { exists: true, ok: false, has_x: false, has_claude: false };
+  }
+}
+
 // ログイン用の合言葉を解決（新名 LOGIN_PASSWORD を優先・旧名 API_TOKEN は後方互換）。
 export function loginSecret(env: Env): string {
   return env.LOGIN_PASSWORD ?? env.API_TOKEN ?? "";

@@ -2804,6 +2804,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     var anns=bc.announcements||[];
     var auto = s.approval_mode==="auto";
     var connected = !!s.connected;
+    var credsError = !!s.creds_error; // 連携は保存されているが読み込めない（連携し直しが必要）
     var pending = s.drafts||0;
     var nextRaw = (st.next_up&&st.next_up[0])?st.next_up[0].not_before:"";
     var nextWhen = nextRaw?fmtJst(nextRaw):"";
@@ -2817,11 +2818,44 @@ export const DASHBOARD_HTML = `<!doctype html>
       });
       h+="</div>";
     }
+    // ⚠ 異常カード（最優先の1枚だけ出す）。連携切れ自体は下の①で扱うので、ここは connected のときだけ。
+    if(connected){
+      var failedN=(st.counts&&st.counts.failed)||0;
+      var postedN=(st.counts&&st.counts.posted)||0;
+      var posted24=st.posted_24h||0;
+      var ge=s.last_gen_error||null;
+      var geAge=(ge&&ge.at)?genErrAgeMs(ge.at):Infinity;
+      if(failedN>0){
+        // 優先1：投稿に失敗したものがある
+        h+=homeBox("#fcebeb","#f0c0c0","var(--danger)",
+          "<div style='display:flex;align-items:center;gap:12px'><i class='ti ti-alert-triangle' style='font-size:24px;color:var(--danger)'></i><div><div style='font-weight:500;color:var(--danger)'>投稿に失敗したものが "+failedN+"件 あります</div><div class='note'>そのままにすると投稿の本数が減ります。よくある原因は、Xの利用枠や支払い上限に達している・文字数の超えすぎ、です。内容を確認して、直して再予約するか、破棄してください。</div></div></div>"+
+          "<button class='accent' onclick=\\"nav('scheduled')\\">失敗した投稿を確認</button>");
+      } else if(postedN>=1 && posted24===0 && queued===0 && pending===0){
+        // 優先2：投稿が止まっている（過去に投稿実績あり／直近24h 0本／在庫も下書きも無い）
+        var b2 = ge
+          ? "この24時間、投稿がありません。予約も残っていません。下書きの自動作成が失敗しているためです（下の理由もご覧ください）。Claudeの残高（クレジット）切れが最も多い原因です。<br>最後の失敗："+fmtJstHour(ge.at)
+          : "この24時間、投稿がありません。予約も残っていません。「下書きをつくる」で作成すると再開できます。続くようならX・Claudeの連携と残高をご確認ください。";
+        h+=homeBox("#fcebeb","#f0c0c0","var(--danger)",
+          "<div style='display:flex;align-items:center;gap:12px'><i class='ti ti-alert-triangle' style='font-size:24px;color:var(--danger)'></i><div><div style='font-weight:500;color:var(--danger)'>投稿が止まっています</div><div class='note'>"+b2+"</div></div></div>"+
+          "<button class='primary' onclick='generate()'>下書きをつくる</button>");
+      } else if(ge && geAge < 172800000){
+        // 優先3：下書きの自動作成だけ失敗している（48時間以内・黄）
+        h+=homeBox("#fdf6e3","#e8d8a8","#8a6d1a",
+          "<div style='display:flex;align-items:center;gap:12px'><i class='ti ti-alert-triangle' style='font-size:24px;color:#b8860b'></i><div><div style='font-weight:500;color:#8a6d1a'>下書きの自動作成に失敗しました（"+fmtJstHour(ge.at)+"）</div><div class='note'>今の予約分が終わると投稿が止まります。Claudeの残高（クレジット）と連携をご確認ください。多くの場合、残高を追加すると翌朝から自動で再開します。</div></div></div>");
+      }
+    }
     // ① 今やること（承認モードで主役が変わる。連携切れは最優先で警告）
     if(!connected){
-      h+=homeBox("#fcebeb","#f0c0c0","var(--danger)",
-        "<div style='display:flex;align-items:center;gap:12px'><i class='ti ti-alert-triangle' style='font-size:24px;color:var(--danger)'></i><div><div style='font-weight:500;color:var(--danger)'>X・Claudeの連携が確認できません</div><div class='note'>連携しないと下書き作成・投稿ができません</div></div></div>"+
-        "<button class='accent' onclick=\\"nav('settings')\\">連携を確認</button>");
+      if(credsError){
+        // 連携は保存されているのに読み込めない（鍵ずれ/破損）＝連携し直しが必要
+        h+=homeBox("#fcebeb","#f0c0c0","var(--danger)",
+          "<div style='display:flex;align-items:center;gap:12px'><i class='ti ti-alert-triangle' style='font-size:24px;color:var(--danger)'></i><div><div style='font-weight:500;color:var(--danger)'>連携の情報が読み込めなくなっています</div><div class='note'>保存されているX・Claudeの連携情報が読み取れない状態です。このままでは下書き作成・投稿が止まります。お手数ですが、アカウント設定からもう一度連携し直してください（連携し直すと直ります）。</div></div></div>"+
+          "<button class='accent' onclick=\\"nav('settings')\\">連携を確認</button>");
+      } else {
+        h+=homeBox("#fcebeb","#f0c0c0","var(--danger)",
+          "<div style='display:flex;align-items:center;gap:12px'><i class='ti ti-alert-triangle' style='font-size:24px;color:var(--danger)'></i><div><div style='font-weight:500;color:var(--danger)'>X・Claudeの連携が確認できません</div><div class='note'>連携しないと下書き作成・投稿ができません</div></div></div>"+
+          "<button class='accent' onclick=\\"nav('settings')\\">連携を確認</button>");
+      }
     } else if(auto){
       h+=homeBox("#e1f5ee","#9fe1cb","var(--ok)",
         "<div style='display:flex;align-items:center;gap:12px'><i class='ti ti-robot' style='font-size:24px;color:var(--ok)'></i><div><div style='font-weight:500;color:var(--ok)'>AIが自動で回しています</div><div class='note'>承認は不要。次の投稿："+(nextWhen||"調整中")+"</div></div></div>"+
@@ -3163,6 +3197,24 @@ export const DASHBOARD_HTML = `<!doctype html>
     var d=new Date(String(utc).replace(" ","T")+"Z"); if(isNaN(d.getTime())) return "";
     var j=new Date(d.getTime()+9*3600000); var p=function(n){return ("0"+n).slice(-2);};
     return (j.getUTCMonth()+1)+"/"+j.getUTCDate()+" "+p(j.getUTCHours())+":"+p(j.getUTCMinutes());
+  }
+  // last_gen_error.at は toISOString()（例 2026-07-19T05:00:00.000Z）。SQLite日時（空白区切り・Z無し）も一応許容。
+  function parseUtcAny(utc){
+    if(!utc) return null;
+    var s=String(utc);
+    var d = (s.indexOf("T")>=0 || s.indexOf("Z")>=0) ? new Date(s) : new Date(s.replace(" ","T")+"Z");
+    return isNaN(d.getTime()) ? null : d;
+  }
+  // 異常カード用：日時 → 「M月D日 HH時ごろ」（JST・平易表記）。
+  function fmtJstHour(utc){
+    var d=parseUtcAny(utc); if(!d) return "";
+    var j=new Date(d.getTime()+9*3600000);
+    return (j.getUTCMonth()+1)+"月"+j.getUTCDate()+"日 "+j.getUTCHours()+"時ごろ";
+  }
+  // 異常カード用：日時から現在までの経過ミリ秒（48時間以内判定に使う）。読めない時は Infinity。
+  function genErrAgeMs(utc){
+    var d=parseUtcAny(utc); if(!d) return Infinity;
+    return Date.now()-d.getTime();
   }
   // UTC文字列 → datetime-local用 "YYYY-MM-DDTHH:MM"（JST）
   function toLocalInput(utc){
