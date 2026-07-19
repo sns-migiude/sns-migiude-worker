@@ -10,6 +10,7 @@ import {
   deleteTweet,
   fetchAccountMetrics,
   fetchRecentTweets,
+  fetchTweetMetricsLadder,
   uploadMedia,
   weightedLength,
   type XCreds,
@@ -59,7 +60,7 @@ async function urlSampleInstr(env: Env, accountId: string, angle: string): Promi
   return `${URL_TYPE_INSTRUCTION}${a ? "\n" + a : ""}\n誘導先URL: [ここにURL]（飛ばし先URLが未登録です。設定で登録すると、その記事の内容に沿ったサンプルになります）`;
 }
 import { renderCardPng, presetTheme, CARD_PRESETS, CARD_FONTS, isImageType, normImageType, type CardTheme } from "./render";
-import { collectMetrics, collectReplies, collectForAccount } from "./collect";
+import { collectMetrics, collectReplies, collectForAccount, collectSinglePost } from "./collect";
 import { runCycle, runCycleForAccount, generateSamples, regenerateForAccount, cancelQueuedForAccount, generateDaysForAccount, inventoryCap } from "./cycle";
 import { distillCardText } from "./generate";
 import { nextQueueSlot, reflowQueue, getAccountSlots, accountPrepHHMM, sqlUtc } from "./schedule";
@@ -67,7 +68,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.29";
+const CODE_VERSION = "1.30";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -2453,9 +2454,94 @@ export default {
     if (req.method === "POST" && url.pathname === "/api/post/promoted") {
       const b = (await req.json().catch(() => null)) as { account?: string; post_id?: number; on?: boolean } | null;
       if (!b?.account || !b.post_id) return json({ error: "account と post_id は必須" }, 400);
+      // マーク自体は必ず成功させる（X APIの成否に依存しない）。
       await env.DB.prepare(`UPDATE posts SET promoted = ? WHERE id = ? AND account_id = ?`)
         .bind(b.on ? 1 : 0, b.post_id, b.account).run();
-      return json({ ok: true, on: !!b.on });
+      // ONにした時は、30日以内なら内訳を即取り直す（広告インプが public に乗っていれば逆算②で埋まる）。
+      // 再取得の失敗はマークを妨げない＝応答に refetched:false でメモするだけ。
+      let refetched = false, promo_found = false;
+      if (b.on) {
+        try {
+          const pr = await env.DB.prepare(
+            `SELECT (julianday('now') - julianday(posted_at)) AS age_days FROM posts WHERE id = ? AND account_id = ?`
+          ).bind(b.post_id, b.account).first<{ age_days: number }>();
+          const ageDays = pr?.age_days ?? 999;
+          if (pr && ageDays <= 30) {
+            const acc = await loadAccount(env, b.account);
+            if (acc) {
+              const saved = await collectSinglePost(env, acc, b.post_id);
+              refetched = saved > 0;
+              const pf = await env.DB.prepare(
+                `SELECT MAX(promo_impressions) AS p FROM post_metrics WHERE post_id = ?`
+              ).bind(b.post_id).first<{ p: number | null }>().catch(() => null);
+              promo_found = (pf?.p ?? 0) > 0;
+            }
+          }
+        } catch (e) {
+          console.error(`[${b.account}] 広告マーク時の内訳再取得失敗 post#${b.post_id}: ${e instanceof Error ? e.message : e}`);
+          refetched = false;
+        }
+      }
+      return json({ ok: true, on: !!b.on, refetched, promo_found });
+    }
+    // 【読み取り専用】1投稿の内訳をXに問い合わせて診断する（DBには書かない）。
+    // 会員が「内訳を調べる」を押した時に呼ぶ。30日超は即答（API消費ゼロ）／1アカウント5回/日で従量課金の無駄打ちを防ぐ。
+    if (req.method === "POST" && url.pathname === "/api/post/ad-diagnose") {
+      const b = (await req.json().catch(() => null)) as { account?: string; post_id?: number } | null;
+      if (!b?.account || !b.post_id) return json({ error: "account と post_id は必須" }, 400);
+      const row = await env.DB.prepare(
+        `SELECT platform_post_id, posted_at, (julianday('now') - julianday(posted_at)) AS age_days
+         FROM posts WHERE id = ? AND account_id = ? AND platform = 'x'`
+      ).bind(b.post_id, b.account).first<{ platform_post_id: string | null; posted_at: string; age_days: number }>();
+      if (!row || !row.platform_post_id) return json({ ok: false, error: "対象の投稿が見つかりません。" }, 200);
+      const ageDays = Math.floor(row.age_days ?? 999);
+      // 30日超は X のしくみ上 内訳を取り出せない＝API を消費せず即答。
+      if ((row.age_days ?? 999) > 30) {
+        return json({ ok: true, judgment: "too_old", age_days: ageDays, level: null, public_imp: null, organic_imp: null, promoted_imp: null, diff: null, floor_pass: false });
+      }
+      // レート制限：individual_profile の日次キー ad_diag_YYYYMMDD（JST日）で 1アカウント5回/日。
+      const jst = new Date(Date.now() + 9 * 3600 * 1000);
+      const ymd = jst.getUTCFullYear() + String(jst.getUTCMonth() + 1).padStart(2, "0") + String(jst.getUTCDate()).padStart(2, "0");
+      const rlKey = "ad_diag_" + ymd;
+      const rlRow = await env.DB.prepare(
+        `SELECT value_json AS v FROM individual_profile WHERE account_id = ? AND key = ?`
+      ).bind(b.account, rlKey).first<{ v: string }>().catch(() => null);
+      let usedToday = 0; try { usedToday = parseInt(rlRow?.v ?? "0", 10) || 0; } catch { usedToday = 0; }
+      if (usedToday >= 5) {
+        return json({ ok: false, rate_limited: true, message: "今日はもう調べられません。明日また試せます（1日5回まで）。" }, 200);
+      }
+      // API を消費する前にカウントを1つ予約（失敗しても無駄打ちを繰り返さないため）。
+      await env.DB.prepare(
+        `INSERT INTO individual_profile (account_id, key, value_json, updated_at) VALUES (?, ?, ?, datetime('now'))
+         ON CONFLICT(account_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = datetime('now')`
+      ).bind(b.account, rlKey, String(usedToday + 1)).run().catch(() => {});
+      const creds = await xCreds(env, b.account);
+      if (!creds) return json({ ok: false, error: "Xの連携がまだ設定されていません。" }, 200);
+      try {
+        const { level, metrics } = await fetchTweetMetricsLadder(creds, [row.platform_post_id], 0);
+        const m = metrics[0];
+        if (!m) return json({ ok: false, error: "Xから数字が返ってきませんでした。時間をおいてお試しください。" }, 200);
+        const publicImp = m.impressions;
+        // organic：フィールドが返らなければ null（欠落＝逆算不能）。返れば 0 も保持。
+        const organicImp = m.organic ? (m.organic.impressions ?? null) : null;
+        // promoted_metrics（①）は取れる権限が少ない。null=欠落／0=ゼロ返却。生値をそのまま返す。
+        const promotedImp = m.promoted ? (m.promoted.impressions ?? null) : null;
+        // 逆算②：public − organic ＝ 広告分。両方揃った時だけ算出。下限（5以上かつpublicの2%以上）で判定。
+        const diff = (publicImp != null && organicImp != null) ? (publicImp - organicImp) : null;
+        const floorPass = diff != null && diff >= 5 && diff >= (publicImp ?? 0) * 0.02;
+        let judgment: string;
+        if (organicImp == null) judgment = "no_organic";
+        else if (floorPass) judgment = "ad_detected";
+        else judgment = "no_ad_seen";
+        return json({
+          ok: true, judgment, level, age_days: ageDays,
+          public_imp: publicImp, organic_imp: organicImp, promoted_imp: promotedImp,
+          diff, floor_pass: floorPass,
+        });
+      } catch (e) {
+        console.error(`[${b.account}] ad-diagnose失敗 post#${b.post_id}: ${e instanceof Error ? e.message : e}`);
+        return json({ ok: false, error: "Xへの問い合わせに失敗しました。時間をおいてお試しください。" }, 200);
+      }
     }
     // 「スコアが低い型は自動で不採用にする」のON/OFFを保存。
     if (req.method === "POST" && url.pathname === "/api/account/auto-demote") {

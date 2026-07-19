@@ -73,24 +73,45 @@ interface PostRow {
 async function collectMetricsForAccount(
   env: Env,
   account: Account,
-  creds: XCreds
+  creds: XCreds,
+  onlyPostId?: number
 ): Promise<number> {
   await ensurePromotedColumns(env); // どのDBでも org/promo 列を保証してから収集（ドリフト耐性）
   const windowDays = parseInt(env.METRICS_WINDOW_DAYS, 10) || 14;
-  // 既に settled=1 のスナップショットを取れた投稿は再取得しない（API節約＝Xの読み取りコスト削減）。
-  // 48h(SETTLE_HOURS)で数字は安定するので、各投稿は「安定前は毎日＋確定の1回」で打ち止め。
-  // 確定値は必ず1回記録するのでデータ欠落はない（14日窓×毎日 → 約3回に）。
-  const posts = await env.DB.prepare(
-    `SELECT p.id, p.platform_post_id, p.posted_at FROM posts p
-     WHERE p.account_id = ? AND p.platform = 'x' AND p.status = 'posted'
-       AND p.platform_post_id IS NOT NULL AND p.deleted_at IS NULL
-       AND p.posted_at >= datetime('now', ?)
-       AND NOT EXISTS (
-         SELECT 1 FROM post_metrics m WHERE m.post_id = p.id AND m.settled = 1
-       )`
-  )
-    .bind(account.id, `-${windowDays} days`)
-    .all<PostRow>();
+  // 収集対象の選定。通常は2分岐（OR）：
+  //  ① windowDays窓 かつ settled=1 が未取得の投稿（従来の「安定前は毎日＋確定の1回」で打ち止め）。
+  //     確定値は必ず1回記録するのでデータ欠落はない（14日窓×毎日 → 約3回に）＝Xの読み取りコスト節約。
+  //  ② 広告マーク済み(promoted=1)は settle 済みでも29日窓で追い取得する。
+  //     広告インプは投稿後48h(SETTLE_HOURS)以降に伸びるので、settle打ち止めだと取り逃す。
+  //     逆算②（public − organic）で内訳を埋め直すため、organic が返ったフェッチを後から1回でも当てる。
+  //     -29日は「100件チャンクに30日超が混じるとそのチャンクの organic が全滅（チャンク毒化）」を
+  //     避ける安全マージン（Xの内訳は投稿後30日まで）。
+  // onlyPostId 指定時は「その1本だけ・settledフィルタ無視」で下の全ロジック（自リプ控除・感情補正・
+  // baseline・逆算②・promoted自動判定）を同系統で通す（内訳の即時取得。別ロジックは作らない）。
+  const posts = onlyPostId != null
+    ? await env.DB.prepare(
+        `SELECT p.id, p.platform_post_id, p.posted_at FROM posts p
+         WHERE p.account_id = ? AND p.platform = 'x' AND p.status = 'posted'
+           AND p.platform_post_id IS NOT NULL AND p.deleted_at IS NULL
+           AND p.id = ?`
+      )
+        .bind(account.id, onlyPostId)
+        .all<PostRow>()
+    : await env.DB.prepare(
+        `SELECT p.id, p.platform_post_id, p.posted_at FROM posts p
+         WHERE p.account_id = ? AND p.platform = 'x' AND p.status = 'posted'
+           AND p.platform_post_id IS NOT NULL AND p.deleted_at IS NULL
+           AND (
+             ( p.posted_at >= datetime('now', ?)
+               AND NOT EXISTS (SELECT 1 FROM post_metrics m
+                               WHERE m.post_id = p.id AND m.settled = 1) )
+             OR
+             ( COALESCE(p.promoted, 0) = 1
+               AND p.posted_at >= datetime('now', '-29 days') )
+           )`
+      )
+        .bind(account.id, `-${windowDays} days`)
+        .all<PostRow>();
   if (posts.results.length === 0) return 0;
 
   const byTweet = new Map<string, PostRow>();
@@ -223,33 +244,66 @@ async function collectMetricsForAccount(
     // ③ 基準が出せない日（baseline<=0＝反応がまだ全く無い新規）は確定させない＝翌日以降に再取得してリトライ。
     //    基準さえ出れば、反応ゼロの投稿も er_norm=0（＝効かなかった正しい記録）として確定・学習に入る。
     const settledFinal = c.settled === 1 && baseline > 0 ? 1 : 0;
-    await env.DB.prepare(
-      `INSERT INTO post_metrics
-        (post_id, account_id, impressions, likes, reposts, replies, quotes, bookmarks,
-         url_link_clicks, profile_clicks, er_raw, er_norm, settled,
-         org_impressions, org_er_raw, promo_impressions, promo_er_raw)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-      .bind(
-        c.post.id,
-        account.id,
-        c.m.impressions,
-        c.m.likes,
-        c.m.retweets,
-        c.m.replies,
-        c.m.quotes,
-        c.m.bookmarks,
-        c.m.urlLinkClicks,
-        c.m.userProfileClicks,
-        c.erRaw,
-        erNorm,
-        settledFinal,
-        c.orgImp,
-        c.orgEr,
-        c.promoImp,
-        c.promoEr
+    // 「1投稿に settled=1 行は最大1行」という不変条件を守る（cycle.ts の AVG(m.impressions) が依存）。
+    // これから確定行を書く(settledFinal=1)で、既に確定行がある投稿は INSERT せず、その確定行を UPDATE。
+    // ＝広告マーク済みの追い取得（②）で確定行が重複せず、reach学習が過重加重されない。
+    // 確定行が無い（新規）は従来どおり INSERT。settledFinal=0（安定前スナップショット）も INSERT。
+    let existingSettledId: number | null = null;
+    if (settledFinal === 1) {
+      const ex = await env.DB.prepare(
+        `SELECT id FROM post_metrics WHERE post_id = ? AND settled = 1 ORDER BY fetched_at DESC LIMIT 1`
+      ).bind(c.post.id).first<{ id: number }>().catch(() => null);
+      existingSettledId = ex?.id ?? null;
+    }
+    if (existingSettledId != null) {
+      // 上書きは内訳＋インプ系のみ（settled行の同一性は保つ）。fetched_at を更新して最新スナップショット扱いに。
+      await env.DB.prepare(
+        `UPDATE post_metrics SET
+           impressions = ?, er_raw = ?, er_norm = ?,
+           org_impressions = ?, org_er_raw = ?, promo_impressions = ?, promo_er_raw = ?,
+           fetched_at = datetime('now')
+         WHERE id = ?`
       )
-      .run();
+        .bind(
+          c.m.impressions,
+          c.erRaw,
+          erNorm,
+          c.orgImp,
+          c.orgEr,
+          c.promoImp,
+          c.promoEr,
+          existingSettledId
+        )
+        .run();
+    } else {
+      await env.DB.prepare(
+        `INSERT INTO post_metrics
+          (post_id, account_id, impressions, likes, reposts, replies, quotes, bookmarks,
+           url_link_clicks, profile_clicks, er_raw, er_norm, settled,
+           org_impressions, org_er_raw, promo_impressions, promo_er_raw)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+        .bind(
+          c.post.id,
+          account.id,
+          c.m.impressions,
+          c.m.likes,
+          c.m.retweets,
+          c.m.replies,
+          c.m.quotes,
+          c.m.bookmarks,
+          c.m.urlLinkClicks,
+          c.m.userProfileClicks,
+          c.erRaw,
+          erNorm,
+          settledFinal,
+          c.orgImp,
+          c.orgEr,
+          c.promoImp,
+          c.promoEr
+        )
+        .run();
+    }
     saved++;
     // 広告の自動判別：広告インプが観測されたら posts.promoted=1（手動マークと同じフラグ。自動では戻さない）。
     if ((c.promoImp ?? 0) > 0) {
@@ -288,6 +342,20 @@ export async function collectForAccount(env: Env, account: Account): Promise<num
   try { saved = await collectMetricsForAccount(env, account, creds); }
   catch (e) { console.error(`[${account.id}] メトリクス収集失敗: ${e instanceof Error ? e.message : e}`); }
   return saved;
+}
+
+// 1投稿だけを対象に、settledフィルタ無視で内訳を取り直す（会員が「内訳を調べる」/「広告にする」を押した時）。
+// 中身は onlyPostId 指定で collectMetricsForAccount を呼ぶだけの薄いラッパ＝収集ロジックは1系統に保つ。
+// 返り値＝保存(INSERT/UPDATE)した行数。Xクレデンシャルが無ければ 0（＝マーク自体は呼び出し側で成功させる）。
+export async function collectSinglePost(
+  env: Env,
+  account: Account,
+  postId: number
+): Promise<number> {
+  if (!account.platforms.includes("x")) return 0;
+  const creds = await xCreds(env, account.id);
+  if (!creds) return 0;
+  return collectMetricsForAccount(env, account, creds, postId);
 }
 
 export async function collectMetrics(

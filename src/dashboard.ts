@@ -1820,7 +1820,7 @@ export const DASHBOARD_HTML = `<!doctype html>
     h+="<button "+(org?"class='primary'":"")+" style='flex:1"+(org?"":";background:var(--surface2);color:var(--fg);border:1px solid var(--border)")+"' onclick=\\"tmBasis('organic')\\">オーガニック優先<div class='note' style='font-weight:400;margin-top:2px;"+(org?"color:#fff":"")+"'>広告はたまに使う</div></button>";
     h+="<button "+(!org?"class='primary'":"")+" style='flex:1"+(!org?"":";background:var(--surface2);color:var(--fg);border:1px solid var(--border)")+"' onclick=\\"tmBasis('promo')\\">広告優先<div class='note' style='font-weight:400;margin-top:2px;"+(!org?"color:#fff":"")+"'>広告を基本戦略に使う</div></button>";
     h+="</div>";
-    h+="<div class='note' style='margin-top:8px'>"+(TM_PROMO_N>0?("これまで広告に使った投稿："+TM_PROMO_N+"件（広告に載せた投稿は自動で判別されます）"):"まだ広告に使った投稿は検出されていません。広告優先は、広告を回し始めてから効果が出ます。")+"</div>";
+    h+="<div class='note' style='margin-top:8px'>"+(TM_PROMO_N>0?("これまで広告に使った投稿："+TM_PROMO_N+"件。"):"まだ広告に使った投稿はありません。")+"広告を回したら、その投稿の「広告にする」を押してください。押すと内訳の数字をXに取りにいき、学習からも正しく外します（投稿から2日以内に配信が始まった広告は、自動で見つかることもあります）。</div>";
     h+="</div>";
     h+="<div class='card'><div class='row' style='justify-content:space-between;align-items:center;gap:10px'><div style='min-width:0'><b>スコアが低い型を自動で不採用にする</b><div class='note' style='margin-top:2px'>ONにすると、十分にデータがたまった型のうち<b>平常比が低いもの</b>をサイクルで自動的に不採用にします（最低10種は必ず残す／手動で戻した型は再び外しません）。外した型は下の「不採用リスト」に残ります。</div></div><label class='switch' title='ONで自動不採用'><input type='checkbox' "+(TM_AUTO_DEMOTE?'checked':'')+" onchange='tmAutoDemote(this.checked)'><span class='slider'></span></label></div></div>";
     h+="<div class='card'><h3 style='margin-top:0'>あなたの型（"+TM_CUSTOM.length+"）</h3>";
@@ -2434,7 +2434,7 @@ export const DASHBOARD_HTML = `<!doctype html>
         h+="<div style='display:grid;grid-template-columns:1fr 1fr;gap:10px'>";
         var oq=bd.organic, pq=bd.promoted;
         h+="<div class='card' style='margin:0'><div class='note'>オーガニック（通常の表示）</div>"+(oq?("<div style='font-size:19px;font-weight:600;margin-top:2px'>反応率 "+oq.avg_er_pct+"%</div><div class='note'>平均インプ "+comma(oq.avg_impressions)+" ・ "+oq.n+"本</div>"):"<div class='note' style='margin-top:6px'>データ待ち</div>")+"</div>";
-        h+="<div class='card' style='margin:0;border-color:#b5d4f4'><div class='note'>広告（ブースト分）</div>"+(pq?("<div style='font-size:19px;font-weight:600;margin-top:2px'>反応率 "+pq.avg_er_pct+"%</div><div class='note'>平均インプ "+comma(pq.avg_impressions)+" ・ "+pq.n+"本</div>"):"<div class='note' style='margin-top:6px'>データ待ち</div>")+"</div>";
+        h+="<div class='card' style='margin:0;border-color:#b5d4f4'><div class='note'>広告（ブースト分）</div>"+(pq?("<div style='font-size:19px;font-weight:600;margin-top:2px'>反応率 "+pq.avg_er_pct+"%</div><div class='note'>平均インプ "+comma(pq.avg_impressions)+" ・ "+pq.n+"本</div>"):"<div class='note' style='margin-top:6px'>内訳の数字はまだ取得できていません。広告の配信が進むと自動で埋まります（投稿から30日まで）。</div>")+"</div>";
         h+="</div>";
         h+="<div class='note' style='margin-top:8px'>広告は「初見の人」に届くので反応率はオーガニックより低く出るのが普通です。学習では両者を別々に評価します（型の管理の「学習の基準」で軸足を選べます）。</div>";
         h+="</div>";
@@ -2467,7 +2467,8 @@ export const DASHBOARD_HTML = `<!doctype html>
       h+="<div class='card'><h3 style='margin-top:0'>ランキング</h3>"
         + "<div class='row' id='rankCatTabs' style='gap:6px;margin-bottom:8px'>"+ct+"</div>"
         + "<div id='rankBody'></div>"
-        + "<div class='note' style='margin-top:8px'>列の見出しをタップで並び替え（もう一度で昇順⇄降順）。反応率＝(いいね＋リポスト＋返信)÷インプの平均。型別・時間帯別は平均値です。<br>💡 <b>ポスト別</b>で、広告（ブースト）に使った投稿は各行の「広告にする」で印を付けられます。印を付けた投稿は、広告インプで反応率が薄まるため<b>オーガニックの学習からは外して</b>評価します。</div></div>";
+        + "<div id='adDiagBox'></div>"
+        + "<div class='note' style='margin-top:8px'>列の見出しをタップで並び替え（もう一度で昇順⇄降順）。反応率＝(いいね＋リポスト＋返信)÷インプの平均。型別・時間帯別は平均値です。<br>💡 <b>ポスト別</b>で、広告（ブースト）に使った投稿は各行の「広告にする」で印を付けられます。印を付けた投稿は、広告インプで反応率が薄まるため<b>オーガニックの学習からは外して</b>評価します。「内訳を調べる」を押すと、その投稿の表示回数の内訳（ふだんの表示／広告による表示）をXに確認できます。</div></div>";
       h+=learnedCard(b.learned);
       if($("analysisBody")){ $("analysisBody").innerHTML=h; renderHintCards(); renderRankTable(); } // hintBody/rankBody生成後に描画
     });
@@ -2482,22 +2483,72 @@ export const DASHBOARD_HTML = `<!doctype html>
   function rankCatData(){ if(!ANALYSIS)return []; if(RANK_CAT==="post")return ANALYSIS.by_post||[]; if(RANK_CAT==="hour")return ANALYSIS.by_hour||[]; return ANALYSIS.by_type||[]; }
   function nameLabel(){ return RANK_CAT==="post"?"ポスト":RANK_CAT==="hour"?"時間":"型"; }
   // 広告マークのトグル（ポスト別のみ）。ONで「広告」バッジ（クリックで解除）、OFFで「広告にする」リンク。
+  // 隣に「内訳を調べる」（Xに1回問い合わせて内訳を確認）を並べる。
   function adToggle(row){
     if(!(RANK_CAT==="post" && row && row.id)) return "";
-    return row.promoted
+    var mark = row.promoted
       ? " <span class='pill' style='background:var(--accent-bg);color:var(--accent-strong);font-size:11px;cursor:pointer' title='クリックで広告マークを解除' onclick='togglePromoted("+row.id+",false)'>広告 ✕</span>"
       : " <span class='note' style='font-size:11px;cursor:pointer;text-decoration:underline' onclick='togglePromoted("+row.id+",true)'>広告にする</span>";
+    var diag = " <span class='note' style='font-size:11px;cursor:pointer;text-decoration:underline' onclick='adDiagnose("+row.id+")'>内訳を調べる</span>";
+    return mark + diag;
   }
   function togglePromoted(id, on){
+    if(on){ msg("内訳の数字をXに取りにいっています…"); }
     api("POST","/api/post/promoted",{account:ACC, post_id:id, on:on}).then(function(r){
       if(r.body&&r.body.ok){
         var bp=(ANALYSIS&&ANALYSIS.by_post)||[];
         for(var i=0;i<bp.length;i++) if(bp[i].id===id) bp[i].promoted=on?1:0;
         renderRankTable();
-        msg(on?"この投稿を「広告」に設定しました。オーガニックの学習からは外して評価します。":"「広告」マークを解除しました。");
+        if(on){
+          if(r.body.promo_found){ msg("この投稿を「広告」に設定し、広告の内訳を取り込みました。オーガニックの学習からは外して評価します。"); }
+          else if(r.body.refetched){ msg("この投稿を「広告」に設定しました。広告による表示はまだ数字に現れていません（時間をおくと自動で埋まります）。オーガニックの学習からは外して評価します。"); }
+          else { msg("この投稿を「広告」に設定しました。内訳の数字は後ほど自動で取り込みます。オーガニックの学習からは外して評価します。"); }
+        } else {
+          msg("「広告」マークを解除しました。");
+        }
       } else { msg((r.body&&r.body.error)||"変更できませんでした。",false); }
     });
   }
+  // 「内訳を調べる」：Xに1回だけ問い合わせて、この投稿の「合計／ふだんの表示／広告による表示」を出す（読み取り専用）。
+  function adDiagnose(id){
+    if(!confirm("この投稿の「内訳」をXに問い合わせます。\\nXへの問い合わせを1回使います（1日5回まで）。\\n実行しますか？")) return;
+    var box=$("adDiagBox"); if(box) box.innerHTML="<div class='card note'>内訳をXに問い合わせています…</div>";
+    api("POST","/api/post/ad-diagnose",{account:ACC, post_id:id}).then(function(r){
+      var b=r.body||{}; if(!box) return;
+      if(b.rate_limited){ box.innerHTML="<div class='card note'>"+esc(b.message||"今日はもう調べられません。")+"</div>"; return; }
+      if(!b.ok){ box.innerHTML="<div class='card note'>"+esc(b.error||"うまく調べられませんでした。時間をおいてお試しください。")+"</div>"; return; }
+      box.innerHTML=adDiagCard(b, id);
+    });
+  }
+  function adDiagCard(b, id){
+    var h="<div class='card' style='border-left:3px solid var(--accent)'>";
+    h+="<div class='row' style='justify-content:space-between;align-items:center;margin-bottom:6px'><b>この投稿の内訳（Xに確認した結果）</b><span class='note' style='cursor:pointer' onclick='closeAdDiag()'>✕ 閉じる</span></div>";
+    if(b.judgment==="too_old"){
+      h+="<div class='note'>投稿から30日を過ぎると、Xのしくみ上、内訳は取り出せません。「広告にする」の印だけ付けておけば、学習からは正しく外れます。</div></div>";
+      return h;
+    }
+    h+="<div style='margin-top:4px'>表示された回数（合計）：<b>"+(b.public_imp!=null?(comma(b.public_imp)+"回"):"—")+"</b></div>";
+    if(b.organic_imp!=null){
+      h+="<div style='margin-top:2px'>うち、ふだんの表示：<b>"+comma(b.organic_imp)+"回</b></div>";
+    } else {
+      h+="<div class='note' style='margin-top:2px'>Xからふだんの表示の数字が返ってきませんでした。時間をおいてもう一度お試しください。</div>";
+    }
+    if(b.floor_pass && b.diff!=null && b.diff>0){
+      h+="<div style='margin-top:2px'>うち、広告による表示（差し引き）：<b>"+comma(b.diff)+"回</b></div>";
+    }
+    h+="<div style='margin-top:10px;border-top:1px solid var(--border);padding-top:10px'>";
+    if(b.judgment==="ad_detected"){
+      h+="この投稿には広告による表示が <b>"+comma(b.diff)+"回</b> ついています。「広告にする」を押すと、内訳と学習に反映されます。";
+      h+=" <span class='note' style='cursor:pointer;text-decoration:underline' onclick='togglePromoted("+id+",true)'>広告にする</span>";
+    } else if(b.judgment==="no_organic"){
+      h+="いまXから「ふだんの表示」の数字が返ってきていないため、内訳を計算できませんでした。広告を出した直後は、Xの集計に時間がかかることがあります。半日ほどおいて、もう一度お調べください。";
+    } else {
+      h+="広告による表示はまだ数字に現れていません。広告を出した直後は、Xの集計に時間がかかることがあります。半日ほどおいて、もう一度お調べください。";
+    }
+    h+="</div></div>";
+    return h;
+  }
+  function closeAdDiag(){ var box=$("adDiagBox"); if(box) box.innerHTML=""; }
   function nameOf(row){ return RANK_CAT==="post"?(esc(row.body)+adToggle(row)+xLink(row.pid)):RANK_CAT==="hour"?(row.hour+"時台"):esc(row.hook_label||row.hook); }
   function sortVal(row,col){
     if(col==="__name"){ if(RANK_CAT==="hour")return row.hour; if(RANK_CAT==="post")return new Date(String(row.posted_at).replace(" ","T")+"Z").getTime(); return row.hook||""; }

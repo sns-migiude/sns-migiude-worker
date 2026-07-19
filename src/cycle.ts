@@ -589,7 +589,9 @@ async function genOmakase(env: Env, account: Account, count: number, guide: stri
   if (focus && focus.policy === "reach_impressions") {
     const ir = await env.DB.prepare(
       `SELECT p.hook AS hook, AVG(m.impressions) AS avgImp FROM posts p JOIN post_metrics m ON m.post_id = p.id
-        WHERE p.account_id = ? AND m.settled = 1 AND m.impressions IS NOT NULL AND p.hook IS NOT NULL GROUP BY p.hook`
+        WHERE p.account_id = ? AND m.settled = 1 AND m.impressions IS NOT NULL AND p.hook IS NOT NULL
+          AND m.fetched_at = (SELECT MAX(m2.fetched_at) FROM post_metrics m2 WHERE m2.post_id = p.id AND m2.settled = 1)
+        GROUP BY p.hook`
     ).bind(account.id).all<{ hook: string; avgImp: number }>().catch(() => ({ results: [] as Array<{ hook: string; avgImp: number }> }));
     impAvgByHook = {}; for (const r of ir.results ?? []) impAvgByHook[r.hook] = r.avgImp;
     const vals = Object.values(impAvgByHook).sort((a, b) => a - b);

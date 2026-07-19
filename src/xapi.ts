@@ -190,29 +190,31 @@ interface RawTweet {
   promoted_metrics?: RawContextMetrics;
 }
 
-// 最大100件ずつ取得。non_public/organic/promoted は自分のポスト・30日以内のみ有効で、
-// プラン/権限によっては403/400になるため、段階的にフィールドを落として再試行する：
+// フィールドの取得ラダー（段階的にフィールドを落として再試行）。
 //   ①public+non_public+organic+promoted → ②+organic(promoted落とす) → ③+non_public → ④publicのみ
 // （organic/promoted＝広告内訳。promoted_metricsはAds API寄りで取れない権限が多いため、
 //   promotedがダメでも organic は残す＝オーガニック学習を守る。②のレベルがその保険。）
-export async function fetchTweetMetrics(
+const METRICS_FIELD_LEVELS = [
+  "public_metrics,non_public_metrics,organic_metrics,promoted_metrics",
+  "public_metrics,non_public_metrics,organic_metrics",
+  "public_metrics,non_public_metrics",
+  "public_metrics",
+];
+
+// 最大100件ずつ取得。non_public/organic/promoted は自分のポスト・30日以内のみ有効で、
+// プラン/権限によっては403/400になるため、上のラダーを level から順に落として再試行する。
+// 戻り値の level ＝「実際に成功したフィールドレベル」（診断で organic が返ったか等の切り分けに使う）。
+export async function fetchTweetMetricsLadder(
   creds: XCreds,
   tweetIds: string[],
-  includeNonPublic: boolean,
-  fieldLevel?: number
-): Promise<TweetMetrics[]> {
-  if (tweetIds.length === 0) return [];
+  level: number = 0
+): Promise<{ level: number; metrics: TweetMetrics[] }> {
+  if (tweetIds.length === 0) return { level, metrics: [] };
   if (tweetIds.length > 100) throw new Error("一度に取得できるのは100件まで");
 
-  const LEVELS = [
-    "public_metrics,non_public_metrics,organic_metrics,promoted_metrics",
-    "public_metrics,non_public_metrics,organic_metrics",
-    "public_metrics,non_public_metrics",
-    "public_metrics",
-  ];
-  const level = fieldLevel ?? (includeNonPublic ? 0 : LEVELS.length - 1);
+  const lv = Math.max(0, Math.min(level, METRICS_FIELD_LEVELS.length - 1));
   const url = "https://api.x.com/2/tweets";
-  const params = { ids: tweetIds.join(","), "tweet.fields": LEVELS[level] };
+  const params = { ids: tweetIds.join(","), "tweet.fields": METRICS_FIELD_LEVELS[lv] };
   const auth = await oauthHeader(creds, "GET", url, params);
   const res = await fetch(`${url}?${buildQuery(params)}`, {
     headers: { Authorization: auth },
@@ -220,13 +222,15 @@ export async function fetchTweetMetrics(
   const bodyText = await res.text();
 
   if (!res.ok) {
-    if (level < LEVELS.length - 1 && (res.status === 403 || res.status === 400)) {
-      console.log(`[xapi] metrics fields level${level} 不可(${res.status})→level${level + 1}で再試行`);
-      return fetchTweetMetrics(creds, tweetIds, includeNonPublic, level + 1);
+    if (lv < METRICS_FIELD_LEVELS.length - 1 && (res.status === 403 || res.status === 400)) {
+      console.log(`[xapi] metrics fields level${lv} 不可(${res.status})→level${lv + 1}で再試行`);
+      return fetchTweetMetricsLadder(creds, tweetIds, lv + 1);
     }
     throw new XApiError(res.status, bodyText);
   }
 
+  // ctx(): フィールドが返らなければ undefined（欠落）／返れば各値（0はゼロとして保持）。
+  // この「欠落 vs ゼロ」の区別を診断・逆算②が使うので、ここで潰さないこと。
   const ctx = (m?: RawContextMetrics) =>
     m
       ? {
@@ -237,7 +241,7 @@ export async function fetchTweetMetrics(
         }
       : undefined;
   const body = JSON.parse(bodyText) as { data?: RawTweet[] };
-  return (body.data ?? []).map((t) => ({
+  const metrics: TweetMetrics[] = (body.data ?? []).map((t) => ({
     tweetId: t.id,
     impressions: t.public_metrics?.impression_count ?? null,
     likes: t.public_metrics?.like_count ?? null,
@@ -250,6 +254,20 @@ export async function fetchTweetMetrics(
     organic: ctx(t.organic_metrics),
     promoted: ctx(t.promoted_metrics),
   }));
+  return { level: lv, metrics };
+}
+
+// 互換ラッパー：従来どおり metrics だけを返す（既存の呼び出し側は無変更で通る）。
+// includeNonPublic の意味も従来と同じ（true＝level0から／false＝publicのみ）。
+export async function fetchTweetMetrics(
+  creds: XCreds,
+  tweetIds: string[],
+  includeNonPublic: boolean,
+  fieldLevel?: number
+): Promise<TweetMetrics[]> {
+  if (tweetIds.length === 0) return [];
+  const startLevel = fieldLevel ?? (includeNonPublic ? 0 : METRICS_FIELD_LEVELS.length - 1);
+  return (await fetchTweetMetricsLadder(creds, tweetIds, startLevel)).metrics;
 }
 
 export interface AccountMetrics {
