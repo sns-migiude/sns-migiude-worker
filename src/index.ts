@@ -69,7 +69,7 @@ import { DASHBOARD_HTML } from "./dashboard";
 
 // ── このワーカーのコード版（2桁小数・0.01刻み 例 1.00→1.01→…→1.99→2.00）。本部の latest_code_version と数値で比べて「更新あり」を出す。 ──
 // リリース手順：公開リポ更新時にここを +0.01（大きい更新は +1.00 等）→ 本部コンソールで「最新版」を同じ数字に。
-const CODE_VERSION = "1.31";
+const CODE_VERSION = "1.32";
 
 const MAX_RETRY = 3;
 const USDJPY_FALLBACK = 155; // 取得できないときの概算レート
@@ -2034,6 +2034,10 @@ export default {
         promoted: (r.promoted ?? 0) === 1, // 広告に使った投稿（自動判別）
         promo_er_pct: r.promo_er_raw != null ? erPct(r.promo_er_raw) : null, // 広告分の反応率（あれば）
         org_er_pct: r.org_er_raw != null ? erPct(r.org_er_raw) : null,       // オーガニック分の反応率（あれば）
+        // 表示回数の内訳（ポスト別テーブルの「ふだんの表示」「広告の表示」列用）。
+        // 内訳が取れていない投稿（30日超などでXが返さない）は null＝画面では「-」。
+        org_impressions: r.org_impressions != null ? num(r.org_impressions) : null,
+        promo_impressions: r.promo_impressions != null ? num(r.promo_impressions) : null,
         star: starMap.get(r.id) ?? null, // 会員の自己評価★（未評価はnull）
       }));
 

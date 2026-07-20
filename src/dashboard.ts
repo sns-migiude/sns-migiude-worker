@@ -2468,7 +2468,7 @@ export const DASHBOARD_HTML = `<!doctype html>
         + "<div class='row' id='rankCatTabs' style='gap:6px;margin-bottom:8px'>"+ct+"</div>"
         + "<div id='rankBody'></div>"
         + "<div id='adDiagBox'></div>"
-        + "<div class='note' style='margin-top:8px'>列の見出しをタップで並び替え（もう一度で昇順⇄降順）。反応率＝(いいね＋リポスト＋返信)÷インプの平均。型別・時間帯別は平均値です。<br>💡 <b>ポスト別</b>で、広告（ブースト）に使った投稿は各行の「広告にする」で印を付けられます。印を付けた投稿は、広告インプで反応率が薄まるため<b>オーガニックの学習からは外して</b>評価します。「内訳を調べる」を押すと、その投稿の表示回数の内訳（ふだんの表示／広告による表示）をXに確認できます。</div></div>";
+        + "<div class='note' style='margin-top:8px'>列の見出しをタップで並び替え（もう一度で昇順⇄降順）。反応率＝(いいね＋リポスト＋返信)÷インプの平均。型別・時間帯別は平均値です。<br>💡 <b>ポスト別</b>で、広告（ブースト）に使った投稿は各行の「広告にする」で印を付けられます。印を付けた投稿は、広告インプで反応率が薄まるため<b>オーガニックの学習からは外して</b>評価します。「内訳を調べる」を押すと、その投稿の表示回数の内訳（ふだんの表示／広告による表示）をXに確認できます。<br>💡 <b>「インプ」が大きいのに「ふだんの表示」が小さい行</b>は、広告を回した投稿の可能性があります。印が付いていなければ「広告にする」を押すと、オーガニックの学習から外れます。投稿から30日を過ぎるとXが内訳を出さないため「-」になります。</div></div>";
       h+=learnedCard(b.learned);
       if($("analysisBody")){ $("analysisBody").innerHTML=h; renderHintCards(); renderRankTable(); } // hintBody/rankBody生成後に描画
     });
@@ -2512,12 +2512,15 @@ export const DASHBOARD_HTML = `<!doctype html>
   // 「内訳を調べる」：Xに1回だけ問い合わせて、この投稿の「合計／ふだんの表示／広告による表示」を出す（読み取り専用）。
   function adDiagnose(id){
     if(!confirm("この投稿の「内訳」をXに問い合わせます。\\nXへの問い合わせを1回使います（1日5回まで）。\\n実行しますか？")) return;
-    var box=$("adDiagBox"); if(box) box.innerHTML="<div class='card note'>内訳をXに問い合わせています…</div>";
+    var box=$("adDiagBox");
+    // 結果は表の下に出るため、押した直後にその場所まで画面を送る（押しても何も起きないように見えるのを防ぐ）。
+    if(box){ box.innerHTML="<div class='card note'>内訳をXに問い合わせています…</div>"; try{ box.scrollIntoView({behavior:"smooth",block:"center"}); }catch(e){ box.scrollIntoView(); } }
     api("POST","/api/post/ad-diagnose",{account:ACC, post_id:id}).then(function(r){
       var b=r.body||{}; if(!box) return;
       if(b.rate_limited){ box.innerHTML="<div class='card note'>"+esc(b.message||"今日はもう調べられません。")+"</div>"; return; }
       if(!b.ok){ box.innerHTML="<div class='card note'>"+esc(b.error||"うまく調べられませんでした。時間をおいてお試しください。")+"</div>"; return; }
       box.innerHTML=adDiagCard(b, id);
+      try{ box.scrollIntoView({behavior:"smooth",block:"center"}); }catch(e){ box.scrollIntoView(); }
     });
   }
   function adDiagCard(b, id){
@@ -2563,6 +2566,8 @@ export const DASHBOARD_HTML = `<!doctype html>
     var cols=[{key:"__name",label:nameLabel()}];
     if(RANK_CAT!=="post") cols.push({key:"n",label:"本数"});
     for(var k=0;k<RANK_COLS.length;k++) cols.push(RANK_COLS[k]);
+    // 表示回数の内訳（ポスト別のみ）。合計インプが大きいのに「ふだんの表示」が小さい行＝広告の疑い。
+    if(RANK_CAT==="post"){ cols.push({key:"org_impressions",label:"ふだんの表示"}); cols.push({key:"promo_impressions",label:"広告の表示"}); }
     if(RANK_CAT==="post") cols.push({key:"star",label:"自己評価"}); // 会員の★（末尾列・クリックで付け外し）
     var h="<div class='rankwrap'><table class='ranktbl'><tr>";
     cols.forEach(function(c){ var on=c.key===RANK_SORT.col; h+="<th class='"+(on?"on":"")+"' onclick=\\"rankSort('"+c.key+"')\\">"+esc(c.label)+(on?(RANK_SORT.dir<0?" ▼":" ▲"):"")+"</th>"; });
@@ -2572,6 +2577,10 @@ export const DASHBOARD_HTML = `<!doctype html>
       h+="<tr><td>"+nameOf(row)+"</td>";
       if(RANK_CAT!=="post") h+="<td>"+comma(row.n)+"</td>";
       RANK_COLS.forEach(function(c){ var v=row[c.key]; var cell = (c.dash0 && !v) ? "-" : (c.pct?((v!=null?v:0)+"%"):comma(v||0)); h+="<td>"+cell+"</td>"; });
+      if(RANK_CAT==="post"){
+        h+="<td>"+(row.org_impressions!=null?comma(row.org_impressions):"-")+"</td>";
+        h+="<td>"+(row.promo_impressions!=null?comma(row.promo_impressions):"-")+"</td>";
+      }
       if(RANK_CAT==="post") h+="<td style='white-space:nowrap'>"+pStarSpans(row.id,(row.star!=null?row.star:0),"rank")+"</td>";
       h+="</tr>";
     });
